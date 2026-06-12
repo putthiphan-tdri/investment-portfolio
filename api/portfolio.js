@@ -1,4 +1,4 @@
-import { put, list } from "@vercel/blob";
+import { put, list, get } from "@vercel/blob";
 
 // The portfolio lives as a single private blob. Reads and writes both go
 // through this function, authenticated with the PORTFOLIO_KEY env var, so the
@@ -20,9 +20,14 @@ function isAuthorized(req) {
 }
 
 export default async function handler(req, res) {
+  // Older store connections inject a static BLOB_READ_WRITE_TOKEN; newer ones
+  // inject BLOB_STORE_ID and the SDK authenticates via Vercel's runtime
+  // identity (OIDC) with no static token. Support both: pass the token only
+  // when one exists, otherwise let the SDK resolve credentials itself.
   const token = blobToken();
+  const blobOptions = token ? { token } : {};
 
-  if (!token) {
+  if (!token && !process.env.BLOB_STORE_ID && !process.env.VERCEL_OIDC_TOKEN) {
     res.status(503).json({
       error: "Blob store is not connected to this project yet.",
       hint: `Env vars visible to the function: ${Object.keys(process.env).filter((key) => key.includes("BLOB") || key.includes("TOKEN") || key === "PORTFOLIO_KEY").join(", ") || "none matching"}`,
@@ -42,25 +47,28 @@ export default async function handler(req, res) {
 
   try {
     if (req.method === "GET") {
-      const { blobs } = await list({ prefix: BLOB_PATH, token });
-      const blob = blobs.find((item) => item.pathname === BLOB_PATH);
+      // get() by pathname works with both auth models; fall back to resolving
+      // the blob URL via list() for older SDK behaviors.
+      let result = await get(BLOB_PATH, { access: "private", ...blobOptions }).catch(() => null);
 
-      if (!blob) {
+      if (!result) {
+        const { blobs } = await list({ prefix: BLOB_PATH, ...blobOptions });
+        const blob = blobs.find((item) => item.pathname === BLOB_PATH);
+
+        if (!blob) {
+          res.status(404).json({ error: "No portfolio stored yet." });
+          return;
+        }
+
+        result = await get(blob.url, { access: "private", ...blobOptions }).catch(() => null);
+      }
+
+      if (!result) {
         res.status(404).json({ error: "No portfolio stored yet." });
         return;
       }
 
-      // Query param busts the CDN cache so reads always see the latest write.
-      const upstream = await fetch(`${blob.url}?ts=${Date.now()}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-
-      if (!upstream.ok) {
-        res.status(502).json({ error: "Could not read the stored portfolio." });
-        return;
-      }
-
-      const payload = await upstream.text();
+      const payload = await new Response(result.stream).text();
       res.setHeader("Content-Type", "application/json");
       res.setHeader("Cache-Control", "no-store");
       res.status(200).send(payload);
@@ -87,7 +95,7 @@ export default async function handler(req, res) {
         allowOverwrite: true,
         addRandomSuffix: false,
         contentType: "application/json",
-        token,
+        ...blobOptions,
       });
 
       res.status(200).json({ ok: true, savedAt: new Date().toISOString() });
