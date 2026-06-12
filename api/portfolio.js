@@ -5,6 +5,14 @@ import { put, list } from "@vercel/blob";
 // blob token never reaches the browser.
 const BLOB_PATH = "portfolio.json";
 
+// The store's token is BLOB_READ_WRITE_TOKEN by default, but connecting a
+// store with a custom env prefix names it <PREFIX>_READ_WRITE_TOKEN instead.
+function blobToken() {
+  if (process.env.BLOB_READ_WRITE_TOKEN) return process.env.BLOB_READ_WRITE_TOKEN;
+  const name = Object.keys(process.env).find((key) => key.endsWith("_READ_WRITE_TOKEN"));
+  return name ? process.env[name] : "";
+}
+
 function isAuthorized(req) {
   const key = process.env.PORTFOLIO_KEY;
   const header = req.headers.authorization || "";
@@ -12,8 +20,13 @@ function isAuthorized(req) {
 }
 
 export default async function handler(req, res) {
-  if (!process.env.BLOB_READ_WRITE_TOKEN) {
-    res.status(503).json({ error: "Blob store is not connected to this project yet." });
+  const token = blobToken();
+
+  if (!token) {
+    res.status(503).json({
+      error: "Blob store is not connected to this project yet.",
+      hint: `Env vars visible to the function: ${Object.keys(process.env).filter((key) => key.includes("BLOB") || key.includes("TOKEN") || key === "PORTFOLIO_KEY").join(", ") || "none matching"}`,
+    });
     return;
   }
 
@@ -29,7 +42,7 @@ export default async function handler(req, res) {
 
   try {
     if (req.method === "GET") {
-      const { blobs } = await list({ prefix: BLOB_PATH });
+      const { blobs } = await list({ prefix: BLOB_PATH, token });
       const blob = blobs.find((item) => item.pathname === BLOB_PATH);
 
       if (!blob) {
@@ -39,7 +52,7 @@ export default async function handler(req, res) {
 
       // Query param busts the CDN cache so reads always see the latest write.
       const upstream = await fetch(`${blob.url}?ts=${Date.now()}`, {
-        headers: { Authorization: `Bearer ${process.env.BLOB_READ_WRITE_TOKEN}` },
+        headers: { Authorization: `Bearer ${token}` },
       });
 
       if (!upstream.ok) {
@@ -74,6 +87,7 @@ export default async function handler(req, res) {
         allowOverwrite: true,
         addRandomSuffix: false,
         contentType: "application/json",
+        token,
       });
 
       res.status(200).json({ ok: true, savedAt: new Date().toISOString() });
