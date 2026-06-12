@@ -1123,11 +1123,26 @@ function formatChartDate(dateKey, range) {
   return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
-function chartTicks(startMs, endMs, range, count = 5) {
-  if (endMs <= startMs) return [formatChartDate(dateKeyFromDate(new Date(endMs)), range)];
-  return Array.from({ length: count }, (_, index) => {
-    const tickMs = startMs + ((endMs - startMs) * index) / (count - 1);
-    return formatChartDate(dateKeyFromDate(new Date(tickMs)), range);
+// X-axis ticks. Short ranges label the actual logged days so each tick sits
+// directly under its plotted point; longer ranges fall back to evenly spaced
+// ticks snapped to whole days. Duplicate labels are dropped.
+function chartTickMarks(chartSnapshots, startMs, endMs, range, count = 5) {
+  const span = Math.max(endMs - startMs, 1);
+  const marks = chartSnapshots.length > 1 && chartSnapshots.length <= 8
+    ? chartSnapshots.map((snapshot) => ({
+      ms: parseDateKey(snapshot.date).getTime(),
+      label: formatChartDate(snapshot.date, range),
+    }))
+    : Array.from({ length: count }, (_, index) => {
+      const key = dateKeyFromDate(new Date(startMs + (span * index) / (count - 1)));
+      return { ms: parseDateKey(key).getTime(), label: formatChartDate(key, range) };
+    });
+
+  const seen = new Set();
+  return marks.filter((mark) => {
+    if (seen.has(mark.label) || mark.ms < startMs || mark.ms > endMs) return false;
+    seen.add(mark.label);
+    return true;
   });
 }
 
@@ -1158,17 +1173,21 @@ function renderChart(range = "1W") {
   const svg = document.querySelector("#performanceChart");
   const insights = document.querySelector("#chartInsights");
   // Match the viewBox to the container's aspect ratio so the plot fills the
-  // panel instead of letterboxing inside a fixed 1400x500 box.
-  const wrap = svg.closest(".line-chart");
-  const rect = wrap ? wrap.getBoundingClientRect() : null;
-  const chartWidth = rect && rect.width > 0 && rect.height > 40
-    ? Math.round(Math.min(Math.max((rect.width / rect.height) * 500, 600), 2800))
-    : 1400;
-  svg.setAttribute("viewBox", `0 0 ${chartWidth} 500`);
+  // panel instead of letterboxing inside a fixed 1400x500 box. This must run
+  // AFTER the insight cards are in the DOM, because they change the chart
+  // area's height — measuring too early leaves the plot narrow.
+  const fitChartWidth = () => {
+    const wrap = svg.closest(".line-chart");
+    const rect = wrap ? wrap.getBoundingClientRect() : null;
+    const fitted = rect && rect.width > 0 && rect.height > 40
+      ? Math.round(Math.min(Math.max((rect.width / rect.height) * 500, 600), 2800))
+      : 1400;
+    svg.setAttribute("viewBox", `0 0 ${fitted} 500`);
+    return fitted;
+  };
   const left = 74;
   const right = 32;
   const top = 26;
-  const width = chartWidth - left - right;
   const height = 382;
   const total = totals();
   if (total.list.length === 0) {
@@ -1180,6 +1199,8 @@ function renderChart(range = "1W") {
         ["Logged Days", "0"],
       ].map(([label, value]) => `<div class="chart-insight"><span>${label}</span><strong class="neutral">${value}</strong></div>`).join("");
     }
+    const chartWidth = fitChartWidth();
+    const width = chartWidth - left - right;
     svg.innerHTML = `
       <line class="chart-grid" x1="${left}" y1="${top}" x2="${left + width}" y2="${top}" />
       <line class="chart-grid" x1="${left}" y1="${top + 96}" x2="${left + width}" y2="${top + 96}" />
@@ -1201,6 +1222,24 @@ function renderChart(range = "1W") {
       { ...snapshots[0], date: dateKeyFromDate(new Date(endMs)) },
     ]
     : snapshots;
+
+  const rangeStart = snapshots[0];
+  const rangeEnd = snapshots[snapshots.length - 1];
+  const rangeDelta = rangeEnd.totalFundValue - rangeStart.totalFundValue;
+  const rangePct = rangeStart.totalFundValue > 0 ? (rangeDelta / rangeStart.totalFundValue) * 100 : 0;
+  const high = snapshots.reduce((maxSnapshot, snapshot) => snapshot.totalFundValue > maxSnapshot.totalFundValue ? snapshot : maxSnapshot, snapshots[0]);
+  const low = snapshots.reduce((minSnapshot, snapshot) => snapshot.totalFundValue < minSnapshot.totalFundValue ? snapshot : minSnapshot, snapshots[0]);
+  if (insights) {
+    insights.innerHTML = [
+      { label: "Range Change", value: `${state.privacyMode ? "" : `<span class="private-value">${money(Math.abs(rangeDelta))}</span> `}${pct(rangePct)}`, tone: rangeDelta >= 0 ? "green" : "red" },
+      { label: "High", value: `<span class="private-value">${money(high.totalFundValue)}</span>`, tone: "" },
+      { label: "Low", value: `<span class="private-value">${money(low.totalFundValue)}</span>`, tone: "" },
+      { label: "Logged Days", value: `${snapshots.length}`, tone: "" },
+    ].map((item) => `<div class="chart-insight"><span>${item.label}</span><strong class="${item.tone}">${item.value}</strong></div>`).join("");
+  }
+
+  const chartWidth = fitChartWidth();
+  const width = chartWidth - left - right;
   const all = chartSnapshots.flatMap((snapshot) => [snapshot.totalFundValue, snapshot.totalPaid]);
   const rawMin = Math.min(...all) - Math.max(total.fundValue, total.paid, 1) * 0.035;
   const rawMax = Math.max(...all) + Math.max(total.fundValue, total.paid, 1) * 0.025;
@@ -1214,7 +1253,7 @@ function renderChart(range = "1W") {
   const latestX = left + ((latestMs - startMs) / Math.max(endMs - startMs, 1)) * width;
   const latestY = top + height - ((latest.totalFundValue - min) / Math.max(max - min, 1)) * height;
   const areaPath = `${portfolioPath} L${left + width},${top + height} L${left},${top + height} Z`;
-  const labels = chartTicks(startMs, endMs, range);
+  const tickMarks = chartTickMarks(chartSnapshots, startMs, endMs, range);
   const config = currencyConfig[state.currency];
   const fmtY = (v) => {
     if (state.privacyMode) return "••••";
@@ -1236,20 +1275,6 @@ function renderChart(range = "1W") {
     const tone = delta > 0 ? "up" : delta < 0 ? "down" : "flat";
     return `<circle class="chart-point ${tone}" cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="${index === chartSnapshots.length - 1 ? "5.2" : "4.4"}"><title>${readableDate(snapshot.date)} · ${tone === "up" ? "up" : tone === "down" ? "down" : "flat"} ${pct(previous && previous.totalFundValue > 0 ? (delta / previous.totalFundValue) * 100 : 0)}</title></circle>`;
   }).join("");
-  const rangeStart = snapshots[0];
-  const rangeEnd = snapshots[snapshots.length - 1];
-  const rangeDelta = rangeEnd.totalFundValue - rangeStart.totalFundValue;
-  const rangePct = rangeStart.totalFundValue > 0 ? (rangeDelta / rangeStart.totalFundValue) * 100 : 0;
-  const high = snapshots.reduce((maxSnapshot, snapshot) => snapshot.totalFundValue > maxSnapshot.totalFundValue ? snapshot : maxSnapshot, snapshots[0]);
-  const low = snapshots.reduce((minSnapshot, snapshot) => snapshot.totalFundValue < minSnapshot.totalFundValue ? snapshot : minSnapshot, snapshots[0]);
-  if (insights) {
-    insights.innerHTML = [
-      { label: "Range Change", value: `${state.privacyMode ? "" : `<span class="private-value">${money(Math.abs(rangeDelta))}</span> `}${pct(rangePct)}`, tone: rangeDelta >= 0 ? "green" : "red" },
-      { label: "High", value: `<span class="private-value">${money(high.totalFundValue)}</span>`, tone: "" },
-      { label: "Low", value: `<span class="private-value">${money(low.totalFundValue)}</span>`, tone: "" },
-      { label: "Logged Days", value: `${snapshots.length}`, tone: "" },
-    ].map((item) => `<div class="chart-insight"><span>${item.label}</span><strong class="${item.tone}">${item.value}</strong></div>`).join("");
-  }
 
   svg.innerHTML = `
     <defs>
@@ -1263,9 +1288,9 @@ function renderChart(range = "1W") {
       return `<line class="chart-grid" x1="${left}" y1="${y}" x2="${left + width}" y2="${y}" />
         <text class="chart-axis" x="${left - 7}" y="${y + 4}" text-anchor="end">${fmtY(label)}</text>`;
     }).join("")}
-    ${labels.map((label, index) => {
-      const x = left + index * (width / (labels.length - 1));
-      return `<text class="chart-axis" x="${x}" y="${top + height + 42}" text-anchor="middle">${label}</text>`;
+    ${tickMarks.map((mark) => {
+      const x = left + ((mark.ms - startMs) / Math.max(endMs - startMs, 1)) * width;
+      return `<text class="chart-axis" x="${x.toFixed(1)}" y="${top + height + 42}" text-anchor="middle">${mark.label}</text>`;
     }).join("")}
     <path class="portfolio-area" d="${areaPath}" />
     <path class="cost-line" d="${costPath}" />
@@ -2444,6 +2469,12 @@ function bindInteractions() {
     chartResizeTimer = window.setTimeout(() => {
       renderChart(document.querySelector(".range-tabs .active")?.dataset.range || "1W");
     }, 150);
+  });
+
+  // Webfont swap changes the insight cards' height, which changes the chart
+  // area — re-fit once fonts are ready.
+  document.fonts?.ready?.then(() => {
+    renderChart(document.querySelector(".range-tabs .active")?.dataset.range || "1W");
   });
 
   document.querySelectorAll(".range-tabs button").forEach((button) => {
