@@ -1,0 +1,11 @@
+# Personal portfolio data — never commit
+corrected-*.json
+*portfolio*.json
+
+# Local preview screenshots (contain account values)
+*.png
+
+# macOS / local tooling
+.DS_Store
+.claude/
+*.command
