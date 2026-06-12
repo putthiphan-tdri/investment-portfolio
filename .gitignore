@@ -9,3 +9,5 @@ corrected-*.json
 .DS_Store
 .claude/
 *.command
+.vercel/
+node_modules/

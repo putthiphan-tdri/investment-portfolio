@@ -48,27 +48,133 @@ function savePortfolio({ captureSnapshot = true } = {}) {
       activities,
       portfolioSnapshots,
     }));
+    scheduleCloudPush();
   } catch {
     showToast("Could not save changes in this browser.");
   }
+}
+
+// --- Cloud sync (Vercel Blob via /api/portfolio) ---
+// localStorage stays the working copy; the private blob is the durable one.
+// Reads/writes are authenticated with a sync key the user enters once.
+const CLOUD_KEY_STORAGE = "myFundsPortfolio.syncKey";
+const cloudState = { pushTimer: 0 };
+
+function cloudKey() {
+  try {
+    return localStorage.getItem(CLOUD_KEY_STORAGE) || "";
+  } catch {
+    return "";
+  }
+}
+
+async function cloudRequest(method, body) {
+  if (!cloudKey()) return null;
+  return fetch("/api/portfolio", {
+    method,
+    headers: {
+      Authorization: `Bearer ${cloudKey()}`,
+      ...(body ? { "Content-Type": "application/json" } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+}
+
+function scheduleCloudPush() {
+  if (!cloudKey()) return;
+  window.clearTimeout(cloudState.pushTimer);
+  cloudState.pushTimer = window.setTimeout(pushPortfolioToCloud, 2500);
+}
+
+async function pushPortfolioToCloud() {
+  try {
+    const response = await cloudRequest("PUT", buildExportPayload());
+    if (response?.status === 401) showToast("Cloud sync key was rejected. Check it in cloud sync settings.");
+  } catch {
+    // Offline or running without the Vercel API (e.g. local python server) — stay quiet.
+  }
+}
+
+async function pullPortfolioFromCloud({ silent = false } = {}) {
+  try {
+    const response = await cloudRequest("GET");
+    if (!response) return;
+
+    if (response.status === 404) {
+      if (holdings.length > 0) {
+        pushPortfolioToCloud();
+        if (!silent) showToast("No cloud copy yet — uploading this portfolio.");
+      }
+      return;
+    }
+
+    if (!response.ok) {
+      if (!silent) {
+        const detail = await response.json().catch(() => ({}));
+        showToast(detail.error || "Cloud sync is not ready yet.");
+      }
+      return;
+    }
+
+    const parsed = await response.json();
+    const stored = JSON.parse(localStorage.getItem(storageKey) || "{}");
+    const localSavedAt = stored.savedAt || "";
+    const cloudSavedAt = parsed.exportedAt || "";
+
+    if (cloudSavedAt > localSavedAt || holdings.length === 0) {
+      applyStoredPayload(parsed);
+      savePortfolio({ captureSnapshot: false });
+      applyPrivacyMode();
+      document.querySelector("#currencyLabel").textContent = state.currency;
+      renderAll();
+      showToast("Portfolio loaded from cloud.");
+    } else {
+      pushPortfolioToCloud();
+    }
+  } catch {
+    // Offline or no API available — local data keeps working.
+  }
+}
+
+function openCloudSyncDialog() {
+  const dialog = document.querySelector("#actionDialog");
+  const fields = document.querySelector("#dialogFields");
+  state.action = "Cloud Sync";
+  state.editingSymbol = "";
+  state.editingActivityId = "";
+
+  document.querySelector("#dialogTitle").textContent = "Cloud Sync";
+  document.querySelector("#dialogCopy").textContent = cloudKey()
+    ? "Cloud sync is on. The portfolio is stored as a private blob on Vercel and loads on any device with this key. Clear the key to turn sync off."
+    : "Enter your sync key to store the portfolio as a private blob on Vercel and load it on any device.";
+  document.querySelector("#confirmAction").textContent = "Save";
+  document.querySelector("#deleteFund").hidden = true;
+  fields.className = "dialog-fields";
+  fields.innerHTML = fieldMarkup([
+    { id: "syncKeyInput", label: "Sync key", value: cloudKey() },
+  ]);
+
+  if (dialog.showModal) dialog.showModal();
+}
+
+function applyStoredPayload(parsed) {
+  state.logDate = /^\d{4}-\d{2}-\d{2}$/.test(parsed.logDate || "") ? parsed.logDate : todayKey();
+  holdings.splice(0, holdings.length, ...((parsed.holdings || []).map((fund) => ({
+    ...fund,
+    navLagDays: Math.max(0, Math.round(Number(fund.navLagDays ?? fund.navLag ?? fund.navDateLag ?? 0))),
+    navHistory: normalizeNavHistory(fund),
+  }))));
+  activities.splice(0, activities.length, ...normalizeActivities(parsed.activities || []));
+  portfolioSnapshots.splice(0, portfolioSnapshots.length, ...normalizePortfolioSnapshots(parsed.portfolioSnapshots || parsed.snapshots || []));
+  if (parsed.currency && currencyConfig[parsed.currency]) state.currency = parsed.currency;
+  if ("privacyMode" in parsed) state.privacyMode = Boolean(parsed.privacyMode);
 }
 
 function loadPortfolio() {
   try {
     const stored = localStorage.getItem(storageKey);
     if (!stored) return;
-
-    const parsed = JSON.parse(stored);
-    state.logDate = /^\d{4}-\d{2}-\d{2}$/.test(parsed.logDate || "") ? parsed.logDate : todayKey();
-    holdings.splice(0, holdings.length, ...((parsed.holdings || []).map((fund) => ({
-      ...fund,
-      navLagDays: Math.max(0, Math.round(Number(fund.navLagDays ?? fund.navLag ?? fund.navDateLag ?? 0))),
-      navHistory: normalizeNavHistory(fund),
-    }))));
-    activities.splice(0, activities.length, ...normalizeActivities(parsed.activities || []));
-    portfolioSnapshots.splice(0, portfolioSnapshots.length, ...normalizePortfolioSnapshots(parsed.portfolioSnapshots || parsed.snapshots || []));
-    if (parsed.currency && currencyConfig[parsed.currency]) state.currency = parsed.currency;
-    state.privacyMode = Boolean(parsed.privacyMode);
+    applyStoredPayload(JSON.parse(stored));
   } catch {
     console.warn("Saved portfolio data could not be loaded.");
   }
@@ -2236,6 +2342,20 @@ function handleConfirm(event) {
     }
   } else if (state.action === "Import Data") {
     if (!importSampleData()) return;
+  } else if (state.action === "Cloud Sync") {
+    const key = getValue("syncKeyInput");
+    try {
+      if (key) {
+        localStorage.setItem(CLOUD_KEY_STORAGE, key);
+        showToast("Cloud sync enabled. Checking for a stored portfolio…");
+        pullPortfolioFromCloud();
+      } else {
+        localStorage.removeItem(CLOUD_KEY_STORAGE);
+        showToast("Cloud sync turned off. Data stays in this browser only.");
+      }
+    } catch {
+      showToast("Could not store the sync key in this browser.");
+    }
   } else {
     showToast(`${state.action} workflow confirmed.`);
   }
@@ -2341,6 +2461,8 @@ function bindInteractions() {
 
   document.querySelector("#refreshButton").addEventListener("click", () => openActionDialog("Update Prices"));
 
+  document.querySelector("#cloudSyncButton")?.addEventListener("click", openCloudSyncDialog);
+
   const logDateInput = document.querySelector("#logDateInput");
   if (logDateInput) {
     logDateInput.addEventListener("change", () => {
@@ -2419,3 +2541,4 @@ savePortfolio({ captureSnapshot: false });
 bindInteractions();
 window.addEventListener("beforeunload", () => savePortfolio({ captureSnapshot: false }));
 renderAll();
+pullPortfolioFromCloud({ silent: true });
