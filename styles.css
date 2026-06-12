@@ -2475,6 +2475,51 @@ th[data-col].sort-desc::after {
     min-width: 0;
   }
 
+  .chart-insights {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin-top: 16px;
+  }
+
+  .chart-insight {
+    min-height: 68px;
+    padding: 11px 12px;
+    border-radius: 9px;
+  }
+
+  .chart-insight:first-child {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 58px;
+  }
+
+  .chart-insight > span {
+    font-size: 10px;
+    line-height: 1.2;
+    letter-spacing: 0.06em;
+  }
+
+  .chart-insight strong {
+    margin-top: 5px;
+    overflow: visible;
+    font-size: clamp(16px, 4.6vw, 19px);
+    line-height: 1.12;
+    text-overflow: clip;
+    white-space: normal;
+  }
+
+  .chart-insight:first-child strong {
+    margin-top: 0;
+    text-align: right;
+  }
+
+  .chart-insight:nth-child(4) {
+    display: none;
+  }
+
   .allocation-layout {
     grid-template-columns: 1fr;
   }
