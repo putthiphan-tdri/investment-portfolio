@@ -1123,16 +1123,17 @@ function formatChartDate(dateKey, range) {
   return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
-// X-axis ticks. Short ranges label the actual logged days so each tick sits
-// directly under its plotted point; longer ranges fall back to evenly spaced
-// ticks snapped to whole days. Duplicate labels are dropped.
+// X-axis ticks. The 1W view labels the selected seven-day window, even when
+// only some days have logs, so the date picker and chart always agree.
+// Longer ranges use evenly spaced ticks snapped to whole days.
 function chartTickMarks(chartSnapshots, startMs, endMs, range, count = 5) {
   const span = Math.max(endMs - startMs, 1);
-  const marks = chartSnapshots.length > 1 && chartSnapshots.length <= 8
-    ? chartSnapshots.map((snapshot) => ({
-      ms: parseDateKey(snapshot.date).getTime(),
-      label: formatChartDate(snapshot.date, range),
-    }))
+  const dayMs = 24 * 60 * 60 * 1000;
+  const marks = range === "1W"
+    ? Array.from({ length: Math.floor(span / dayMs) + 1 }, (_, index) => {
+      const key = dateKeyFromDate(new Date(startMs + index * dayMs));
+      return { ms: parseDateKey(key).getTime(), label: formatChartDate(key, range) };
+    })
     : Array.from({ length: count }, (_, index) => {
       const key = dateKeyFromDate(new Date(startMs + (span * index) / (count - 1)));
       return { ms: parseDateKey(key).getTime(), label: formatChartDate(key, range) };
@@ -1159,12 +1160,13 @@ function snapshotsForRange(range) {
   const snapshots = normalizePortfolioSnapshots(portfolioSnapshots);
   if (snapshots.length === 0) return { snapshots: [], startKey: activeDateKey(), endKey: activeDateKey() };
 
-  const endKey = snapshots[snapshots.length - 1].date > activeDateKey() ? snapshots[snapshots.length - 1].date : activeDateKey();
+  const endKey = activeDateKey();
   const firstKey = snapshots[0].date;
   const requestedStartKey = rangeStartKey(range, endKey);
   const startKey = requestedStartKey ? requestedStartKey : firstKey;
   const visible = snapshots.filter((snapshot) => snapshot.date >= startKey && snapshot.date <= endKey);
-  const usable = visible.length > 0 ? visible : [snapshots[snapshots.length - 1]];
+  const fallback = [...snapshots].reverse().find((snapshot) => snapshot.date <= endKey) || snapshots[0];
+  const usable = visible.length > 0 ? visible : [fallback];
 
   return { snapshots: usable, startKey, endKey };
 }
@@ -1212,29 +1214,33 @@ function renderChart(range = "1W") {
   }
 
   const { snapshots, startKey, endKey } = snapshotsForRange(range);
+  const latestSavedSnapshot = snapshots[snapshots.length - 1];
+  const displaySnapshots = latestSavedSnapshot && latestSavedSnapshot.date < endKey
+    ? [...snapshots, currentSnapshot(endKey)]
+    : snapshots;
   const startMs = parseDateKey(startKey).getTime();
   let endMs = parseDateKey(endKey).getTime();
   if (endMs <= startMs) endMs = parseDateKey(shiftDate(startKey, 1, "day")).getTime();
 
-  const chartSnapshots = snapshots.length === 1
+  const chartSnapshots = displaySnapshots.length === 1
     ? [
-      { ...snapshots[0], date: startKey },
-      { ...snapshots[0], date: dateKeyFromDate(new Date(endMs)) },
+      { ...displaySnapshots[0], date: startKey },
+      { ...displaySnapshots[0], date: dateKeyFromDate(new Date(endMs)) },
     ]
-    : snapshots;
+    : displaySnapshots;
 
-  const rangeStart = snapshots[0];
-  const rangeEnd = snapshots[snapshots.length - 1];
+  const rangeStart = displaySnapshots[0];
+  const rangeEnd = displaySnapshots[displaySnapshots.length - 1];
   const rangeDelta = rangeEnd.totalFundValue - rangeStart.totalFundValue;
   const rangePct = rangeStart.totalFundValue > 0 ? (rangeDelta / rangeStart.totalFundValue) * 100 : 0;
-  const high = snapshots.reduce((maxSnapshot, snapshot) => snapshot.totalFundValue > maxSnapshot.totalFundValue ? snapshot : maxSnapshot, snapshots[0]);
-  const low = snapshots.reduce((minSnapshot, snapshot) => snapshot.totalFundValue < minSnapshot.totalFundValue ? snapshot : minSnapshot, snapshots[0]);
+  const high = displaySnapshots.reduce((maxSnapshot, snapshot) => snapshot.totalFundValue > maxSnapshot.totalFundValue ? snapshot : maxSnapshot, displaySnapshots[0]);
+  const low = displaySnapshots.reduce((minSnapshot, snapshot) => snapshot.totalFundValue < minSnapshot.totalFundValue ? snapshot : minSnapshot, displaySnapshots[0]);
   if (insights) {
     insights.innerHTML = [
       { label: "Range Change", value: `${state.privacyMode ? "" : `<span class="private-value">${money(Math.abs(rangeDelta))}</span> `}${pct(rangePct)}`, tone: rangeDelta >= 0 ? "green" : "red" },
       { label: "High", value: `<span class="private-value">${money(high.totalFundValue)}</span>`, tone: "" },
       { label: "Low", value: `<span class="private-value">${money(low.totalFundValue)}</span>`, tone: "" },
-      { label: "Logged Days", value: `${snapshots.length}`, tone: "" },
+      { label: "Logged Days", value: `${displaySnapshots.length}`, tone: "" },
     ].map((item) => `<div class="chart-insight"><span>${item.label}</span><strong class="${item.tone}">${item.value}</strong></div>`).join("");
   }
 
@@ -1252,7 +1258,7 @@ function renderChart(range = "1W") {
   const latestMs = parseDateKey(latest.date).getTime();
   const latestX = left + ((latestMs - startMs) / Math.max(endMs - startMs, 1)) * width;
   const latestY = top + height - ((latest.totalFundValue - min) / Math.max(max - min, 1)) * height;
-  const areaPath = `${portfolioPath} L${left + width},${top + height} L${left},${top + height} Z`;
+  const areaPath = `${portfolioPath} L${latestX.toFixed(1)},${top + height} L${left},${top + height} Z`;
   const tickMarks = chartTickMarks(chartSnapshots, startMs, endMs, range);
   const config = currencyConfig[state.currency];
   const fmtY = (v) => {
