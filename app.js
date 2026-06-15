@@ -313,6 +313,18 @@ function pct(value) {
   return `${value >= 0 ? "▲ " : "▼ "}${Math.abs(value).toFixed(2)}%`;
 }
 
+function bracketPct(value) {
+  if (Math.abs(value) < 0.005) return "(0.00%)";
+  return `(${value >= 0 ? "+" : "-"}${Math.abs(value).toFixed(2)}%)`;
+}
+
+function rangeChangeMarkup(delta, pctValue) {
+  const tone = delta >= 0 ? "up" : "down";
+  const arrow = delta >= 0 ? "▲" : "▼";
+  const amount = state.privacyMode ? "" : `<span class="private-value">${money(Math.abs(delta), 0)}</span>`;
+  return `<span class="range-change-value">${amount}<span class="range-change-pct ${tone}">${arrow} ${bracketPct(pctValue)}</span></span>`;
+}
+
 function shortMoney(value) {
   const config = currencyConfig[state.currency];
   const converted = value * config.rate;
@@ -1237,9 +1249,9 @@ function renderChart(range = "1W") {
   const low = displaySnapshots.reduce((minSnapshot, snapshot) => snapshot.totalFundValue < minSnapshot.totalFundValue ? snapshot : minSnapshot, displaySnapshots[0]);
   if (insights) {
     insights.innerHTML = [
-      { label: "Range Change", value: `${state.privacyMode ? "" : `<span class="private-value">${money(Math.abs(rangeDelta))}</span> `}${pct(rangePct)}`, tone: rangeDelta >= 0 ? "green" : "red" },
-      { label: "High", value: `<span class="private-value">${money(high.totalFundValue)}</span>`, tone: "" },
-      { label: "Low", value: `<span class="private-value">${money(low.totalFundValue)}</span>`, tone: "" },
+      { label: "Range Change", value: rangeChangeMarkup(rangeDelta, rangePct), tone: rangeDelta >= 0 ? "green" : "red" },
+      { label: "High", value: `<span class="private-value">${money(high.totalFundValue, 0)}</span>`, tone: "" },
+      { label: "Low", value: `<span class="private-value">${money(low.totalFundValue, 0)}</span>`, tone: "" },
       { label: "Logged Days", value: `${displaySnapshots.length}`, tone: "" },
     ].map((item) => `<div class="chart-insight"><span>${item.label}</span><strong class="${item.tone}">${item.value}</strong></div>`).join("");
   }

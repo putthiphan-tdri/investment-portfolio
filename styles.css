@@ -696,6 +696,19 @@ button:active {
   color: var(--red);
 }
 
+.range-change-value {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.range-change-pct {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  white-space: nowrap;
+}
+
 .line-chart {
   flex: 1 1 auto;
   min-height: 0;
@@ -2516,7 +2529,26 @@ th[data-col].sort-desc::after {
     text-align: right;
   }
 
+  .chart-insight:first-child .range-change-value {
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 4px 9px;
+  }
+
+  .range-change-pct {
+    font-size: 0.9em;
+  }
+
   .chart-insight:nth-child(4) {
+    display: none;
+  }
+
+  .value-calendar {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+
+  .value-calendar > :nth-child(7n + 1),
+  .value-calendar > :nth-child(7n) {
     display: none;
   }
 
