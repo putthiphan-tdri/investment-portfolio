@@ -1595,7 +1595,7 @@ th[data-col].sort-desc::after {
 
 .activity-row {
   display: grid;
-  grid-template-columns: 86px 54px minmax(96px, 1fr) minmax(118px, auto);
+  grid-template-columns: 86px max-content minmax(96px, 1fr) minmax(118px, auto);
   align-items: center;
   column-gap: 10px;
   min-height: 62px;
