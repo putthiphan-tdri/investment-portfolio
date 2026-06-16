@@ -1,6 +1,6 @@
 # My Funds — Mutual Fund Portfolio
 
-A static web app for tracking Thai mutual fund holdings: NAV updates, multi-currency funds (THB/USD), P&L calendar heatmap, category allocation, and performance charts.
+A static web app for tracking Thai mutual fund holdings and available cash: NAV updates, multi-currency funds (THB/USD), dividend/sell proceeds deposited to Cash, P&L calendar heatmap, category allocation, and performance charts.
 
 All portfolio data lives in the browser's `localStorage` — nothing is stored on a server. Use **Export JSON** / **Import JSON** in the app to back up or move data between browsers.
 
