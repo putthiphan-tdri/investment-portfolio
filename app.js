@@ -689,6 +689,23 @@ function currentSnapshot(date = activeDateKey()) {
   };
 }
 
+function snapshotsWithLiveCurrent(snapshots, date = activeDateKey()) {
+  const normalized = normalizePortfolioSnapshots(snapshots);
+  if (holdings.length === 0) return normalized;
+
+  const snapshotDate = previousWeekdayKey(date);
+  const liveSnapshot = currentSnapshot(snapshotDate);
+  let found = false;
+  const merged = normalized.map((snapshot) => {
+    if (snapshot.date !== liveSnapshot.date) return snapshot;
+    found = true;
+    return liveSnapshot;
+  });
+
+  if (!found) merged.push(liveSnapshot);
+  return normalizePortfolioSnapshots(merged);
+}
+
 function syncTodaySnapshot() {
   if (holdings.length === 0) {
     return;
@@ -1452,7 +1469,7 @@ function snapshotPath(snapshots, valueKey, min, max, startMs, endMs, width, heig
 }
 
 function snapshotsForRange(range) {
-  const snapshots = normalizePortfolioSnapshots(portfolioSnapshots);
+  const snapshots = snapshotsWithLiveCurrent(portfolioSnapshots);
   if (snapshots.length === 0) return { snapshots: [], startKey: activeDateKey(), endKey: activeDateKey() };
 
   const endKey = activeDateKey();
@@ -1714,7 +1731,7 @@ function buildCalendarDays(monthKey, snapshots) {
 
 function renderValueCalendar() {
   const panel = document.querySelector(".summary-panel");
-  const snapshots = normalizePortfolioSnapshots(portfolioSnapshots);
+  const snapshots = snapshotsWithLiveCurrent(portfolioSnapshots);
   const latestSnapshot = snapshots[snapshots.length - 1];
   const latestMonth = latestSnapshot ? monthKeyFromDate(latestSnapshot.date) : monthKeyFromDate();
   if (!state.calendarMonth) state.calendarMonth = latestMonth;
