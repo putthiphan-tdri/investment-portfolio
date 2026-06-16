@@ -1395,6 +1395,14 @@ tbody tr:hover {
   background: var(--surface-soft);
 }
 
+tbody tr.cash-row {
+  background: #fffaf2;
+}
+
+tbody tr.cash-row:hover {
+  background: #fff5e8;
+}
+
 tbody tr:last-child td {
   border-bottom: 0;
 }
@@ -1669,6 +1677,11 @@ th[data-col].sort-desc::after {
   background: #fff2df;
 }
 
+.badge.withdraw {
+  color: #8f4f00;
+  background: #fff7ea;
+}
+
 .badge.dividend {
   color: #008a61;
   background: #e8f7ef;
@@ -1701,6 +1714,11 @@ th[data-col].sort-desc::after {
   position: relative;
   top: -1px;
   cursor: help;
+}
+
+.cash-chip {
+  background: #fff2df;
+  color: #b86600;
 }
 
 .row-chevron {

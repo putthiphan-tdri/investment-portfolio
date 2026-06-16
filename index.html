@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="./styles.css?v=20260616a" />
+    <link rel="stylesheet" href="./styles.css?v=20260616b" />
   </head>
   <body>
     <div class="app-shell">
@@ -46,7 +46,7 @@
       <main class="content">
         <section class="hero-card reveal">
           <div class="value-block primary-value">
-            <span class="metric-label">Total Fund Value <span class="info-dot" tabindex="0" role="button" aria-label="What is Total Fund Value?" aria-describedby="tfv-tooltip">i<span class="info-tooltip" id="tfv-tooltip">Current value of all mutual-fund holdings based on units owned and current NAV.</span></span></span>
+            <span class="metric-label">Total Portfolio Value <span class="info-dot" tabindex="0" role="button" aria-label="What is Total Portfolio Value?" aria-describedby="tfv-tooltip">i<span class="info-tooltip" id="tfv-tooltip">Current value of mutual-fund holdings plus available Cash.</span></span></span>
             <strong data-money="0">฿0.00</strong>
             <span class="metric-up neutral">฿0.00 (0.00%)</span>
           </div>
@@ -132,7 +132,7 @@
 
           <article class="panel holdings-panel reveal">
             <div class="panel-heading table-head">
-              <h2>Mutual Fund Holdings</h2>
+              <h2>Investments &amp; Cash</h2>
             </div>
             <div class="table-wrap">
               <table>
@@ -201,6 +201,6 @@
     </dialog>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="./app.js?v=20260616a"></script>
+    <script src="./app.js?v=20260616b"></script>
   </body>
 </html>

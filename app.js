@@ -1,5 +1,6 @@
 // Categorical palette stays away from green/red so P&L colors keep their meaning.
 const categoryPalette = {
+  "Cash": "#d57600",
   "Government Bonds": "#315dff",
   "Money Market": "#2fa9bd",
   "Thai Equity": "#ec4899",
@@ -10,6 +11,9 @@ const categoryPalette = {
   "Commodities": "#f97316",
   "Mixed Allocation": "#64748b",
 };
+
+const CASH_SYMBOL = "CASH";
+const CASH_CATEGORY = "Cash";
 
 const holdings = [];
 
@@ -160,9 +164,13 @@ function openCloudSyncDialog() {
 function applyStoredPayload(parsed) {
   state.logDate = /^\d{4}-\d{2}-\d{2}$/.test(parsed.logDate || "") ? parsed.logDate : todayKey();
   holdings.splice(0, holdings.length, ...((parsed.holdings || []).map((fund) => ({
-    ...fund,
-    navLagDays: Math.max(0, Math.round(Number(fund.navLagDays ?? fund.navLag ?? fund.navDateLag ?? 0))),
-    navHistory: normalizeNavHistory(fund),
+    ...(isCashHolding(fund)
+      ? normalizeCashHolding(fund)
+      : {
+          ...fund,
+          navLagDays: Math.max(0, Math.round(Number(fund.navLagDays ?? fund.navLag ?? fund.navDateLag ?? 0))),
+          navHistory: normalizeNavHistory(fund),
+        }),
   }))));
   activities.splice(0, activities.length, ...normalizeActivities(parsed.activities || []));
   portfolioSnapshots.splice(0, portfolioSnapshots.length, ...normalizePortfolioSnapshots(parsed.portfolioSnapshots || parsed.snapshots || []));
@@ -283,6 +291,10 @@ function normalizeActivities(items) {
     grossAmount: Number(item.grossAmount ?? item.grossDividend ?? item.dividendGross ?? 0),
     taxAmount: Number(item.taxAmount ?? item.withholdingTax ?? item.dividendTax ?? 0),
     netAmount: Number(item.netAmount ?? item.netDividend ?? item.amount ?? 0),
+    cashAmount: Number(item.cashAmount ?? 0),
+    cashBasisAmount: Number(item.cashBasisAmount ?? item.holdingCostBasisAmount ?? 0),
+    depositedToCash: Boolean(item.depositedToCash || item.toCash),
+    fromCash: Boolean(item.fromCash || item.useCash),
     ...(item.switch ? { switch: item.switch } : {}),
   }));
 }
@@ -313,7 +325,7 @@ function dividendGrossAmount(activity) {
 
 function dividendTotalsForFund(symbol) {
   return activities
-    .filter((activity) => activity.type === "Dividend" && activity.asset === symbol)
+    .filter((activity) => activity.type === "Dividend" && activity.asset === symbol && !activity.depositedToCash)
     .reduce((totals, activity) => {
       totals.net += dividendNetAmount(activity);
       totals.tax += dividendTaxAmount(activity);
@@ -364,6 +376,108 @@ function shortMoney(value) {
 
 function colorForCategory(category) {
   return categoryPalette[category] || "#6b7a99";
+}
+
+function isCashHolding(item = {}) {
+  return Boolean(item.isCash) || item.symbol === CASH_SYMBOL || item.category === CASH_CATEGORY;
+}
+
+function normalizeCashHolding(item = {}) {
+  const balance = Number(item.cashBalance ?? item.currentValue ?? item.updatedAmount ?? item.purchaseAmount ?? 0);
+  const basis = Number(item.cashBasis ?? item.purchaseAmount ?? balance);
+  const safeBalance = Number.isFinite(balance) ? Math.max(balance, 0) : 0;
+  const safeBasis = Number.isFinite(basis) ? Math.max(basis, 0) : safeBalance;
+  return {
+    ...item,
+    symbol: CASH_SYMBOL,
+    name: item.name || "Available Cash",
+    bank: item.bank || "Cash",
+    port: item.port || "Uninvested",
+    category: CASH_CATEGORY,
+    isCash: true,
+    navCurrency: "THB",
+    cashBalance: safeBalance,
+    cashBasis: safeBalance <= 0 ? 0 : safeBasis,
+    purchaseAmount: safeBalance <= 0 ? 0 : safeBasis,
+    frontFeeRate: 0,
+    navLagDays: 0,
+    units: safeBalance,
+    buyingNav: 1,
+    currentNav: 1,
+    baseNav: 1,
+    dailyChangePct: 0,
+    navHistory: [],
+  };
+}
+
+function cashHolding({ create = false } = {}) {
+  let holding = holdings.find(isCashHolding);
+  if (!holding && create) {
+    holding = normalizeCashHolding();
+    holdings.push(holding);
+  }
+  if (holding) Object.assign(holding, normalizeCashHolding(holding));
+  return holding;
+}
+
+function cashBalance() {
+  return Number(cashHolding()?.cashBalance || 0);
+}
+
+function cashBasisForWithdrawal(amount) {
+  const cash = cashHolding();
+  if (!cash) return amount;
+  const balance = Number(cash.cashBalance || 0);
+  if (balance <= 0) return amount;
+  return Number(cash.cashBasis || 0) * Math.min(Math.max(amount, 0) / balance, 1);
+}
+
+function applyCashDelta(valueDelta, basisDelta) {
+  const cash = cashHolding({ create: valueDelta > 0 || basisDelta > 0 });
+  if (!cash) return Math.abs(valueDelta) < 0.005 && Math.abs(basisDelta) < 0.005;
+
+  const nextBalance = Number(cash.cashBalance || 0) + valueDelta;
+  const nextBasis = Number(cash.cashBasis || 0) + basisDelta;
+  if (nextBalance < -0.005 || nextBasis < -0.005) return false;
+
+  cash.cashBalance = Math.max(nextBalance, 0);
+  cash.cashBasis = cash.cashBalance <= 0 ? 0 : Math.max(nextBasis, 0);
+  cash.purchaseAmount = cash.cashBasis;
+  cash.units = cash.cashBalance;
+  cash.currentNav = 1;
+  cash.buyingNav = 1;
+  cash.baseNav = 1;
+  cash.category = CASH_CATEGORY;
+  cash.isCash = true;
+  return true;
+}
+
+function cashEffectForActivity(activity) {
+  const amount = Number(activity.cashAmount || activity.amount || 0);
+  const basis = Number(activity.cashBasisAmount || 0);
+
+  if (activity.type === "Dividend" && activity.depositedToCash) {
+    return { value: dividendNetAmount(activity), basis: 0 };
+  }
+  if (activity.type === "Sell" && activity.depositedToCash) {
+    return { value: amount, basis };
+  }
+  if (activity.type === "Buy" && activity.fromCash) {
+    return { value: -amount, basis: -basis };
+  }
+  if (activity.type === "Deposit") {
+    return { value: amount, basis: amount };
+  }
+  if (activity.type === "Withdraw") {
+    return { value: -amount, basis: -basis };
+  }
+  return null;
+}
+
+function applyCashEffect(activity, direction = 1) {
+  const effect = cashEffectForActivity(activity);
+  if (!effect) return true;
+  return applyCashDelta(effect.value * direction, effect.basis * direction);
 }
 
 function normalizeNavHistory(fund, { includeLegacy = true } = {}) {
@@ -433,6 +547,40 @@ function fundBuyFx(fund) {
 }
 
 function deriveFund(fund) {
+  if (isCashHolding(fund)) {
+    const cash = normalizeCashHolding(fund);
+    const currentValue = Number(cash.cashBalance || 0);
+    const purchaseAmount = Number(cash.cashBasis || 0);
+    const pnlBaht = currentValue - purchaseAmount;
+    const pnlPct = purchaseAmount > 0 ? (pnlBaht / purchaseAmount) * 100 : 0;
+    return {
+      ...cash,
+      units: currentValue,
+      purchaseAmount,
+      purchaseAmountNative: purchaseAmount,
+      navCurrency: "THB",
+      fxRate: 1,
+      buyFxRate: 1,
+      frontFeeRate: 0,
+      navLagDays: 0,
+      dailyChangePct: 0,
+      navHistory: [],
+      navDate: activeDateKey(),
+      logDate: activeDateKey(),
+      baseNav: 1,
+      offerNav: 1,
+      capitalInvested: purchaseAmount,
+      feePaid: 0,
+      currentNav: 1,
+      baseValue: currentValue,
+      currentValue,
+      updatedAmount: currentValue,
+      dividends: { net: 0, tax: 0, gross: 0 },
+      pnlBaht,
+      pnlPct,
+    };
+  }
+
   const frontFeeRate = Number(fund.frontFeeRate || 0);
   const navCurrency = fundNavCurrency(fund);
   const currentFxRate = fundCurrentFx(fund);
@@ -460,12 +608,13 @@ function deriveFund(fund) {
   const currentValue = units * currentNav * currentFxRate;
   const baseValue = units * previousNav * currentFxRate;
   const dividends = dividendTotalsForFund(fund.symbol);
-  const pnlBaht = currentValue + dividends.net - purchaseAmount;
+  const pnlBaht = currentValue - purchaseAmount;
   const pnlPct = purchaseAmount > 0 ? (pnlBaht / purchaseAmount) * 100 : 0;
   return { ...fund, units, purchaseAmount, purchaseAmountNative, navCurrency, fxRate: currentFxRate, buyFxRate, frontFeeRate, navLagDays, dailyChangePct, navHistory, navDate, logDate: activeDateKey(), baseNav, offerNav, capitalInvested, feePaid, currentNav, baseValue, currentValue, updatedAmount: currentValue, dividends, pnlBaht, pnlPct };
 }
 
 function isArchivedFund(fund) {
+  if (isCashHolding(fund)) return Number(fund.cashBalance ?? fund.currentValue ?? fund.purchaseAmount ?? 0) <= 0;
   return Boolean(fund.archived) || (Number(fund.units || 0) <= 0 && Number(fund.purchaseAmount || 0) <= 0);
 }
 
@@ -473,8 +622,12 @@ function activeRawHoldings() {
   return holdings.filter((item) => !isArchivedFund(item));
 }
 
+function activeFundHoldings() {
+  return activeRawHoldings().filter((item) => !isCashHolding(item));
+}
+
 function archivedRawHoldings() {
-  return holdings.filter(isArchivedFund);
+  return holdings.filter((item) => !isCashHolding(item) && isArchivedFund(item));
 }
 
 function funds() {
@@ -684,6 +837,27 @@ function bindAssetFormHelpers() {
   });
 }
 
+function cashFieldMarkup(cash = {}) {
+  return fieldMarkup([
+    { id: "cashName", label: "Cash label", value: cash.name || "Available Cash" },
+    { id: "cashBank", label: "Bank / channel", value: cash.bank || "Cash" },
+    { id: "cashPort", label: "Port", value: cash.port || "Uninvested" },
+    { id: "cashBalance", label: "Cash balance", type: "number", step: "0.01", value: cash.cashBalance ?? "", min: "0" },
+    { id: "cashBasis", label: "Cash basis for P&L", type: "number", step: "0.01", value: cash.cashBasis ?? cash.cashBalance ?? "", min: "0" },
+  ]);
+}
+
+function readCashFormValues() {
+  const field = (id) => document.querySelector(`#${id}`);
+  return {
+    name: field("cashName")?.value || "Available Cash",
+    bank: field("cashBank")?.value || "Cash",
+    port: field("cashPort")?.value || "Uninvested",
+    cashBalance: Number(field("cashBalance")?.value || 0),
+    cashBasis: Number(field("cashBasis")?.value || 0),
+  };
+}
+
 function renderHero() {
   syncLogDateInput();
   const total = totals();
@@ -733,14 +907,38 @@ function renderHoldings() {
       <tr class="empty-table-row">
         <td colspan="12">
           <div class="empty-table-state">
-            <strong>No mutual funds yet</strong>
-            <span>Add a fund or import JSON to start calculating units, NAV, current value, and P&L.</span>
+            <strong>No investments or cash yet</strong>
+            <span>Add a fund, deposit cash, or import JSON to start tracking portfolio value.</span>
           </div>
         </td>
       </tr>
     `;
   } else {
-    body.innerHTML = sorted.map((item) => `
+    body.innerHTML = sorted.map((item) => isCashHolding(item) ? `
+    <tr data-symbol="${item.symbol}" class="cash-row">
+      <td data-label="Fund">
+        <div class="asset-cell">
+          <span class="asset-name"><strong>${item.symbol} <span class="ccy-chip cash-chip" title="Available cash">Cash</span></strong><span>${item.name}</span></span>
+        </div>
+      </td>
+      <td data-label="Bank / Port"><strong>${item.bank}</strong><span class="cell-note">${item.port}</span></td>
+      <td data-label="Category"><span class="category-pill" style="--pill-color:${colorForCategory(item.category)}">${item.category}</span></td>
+      <td class="private-value" data-label="Cash Basis">${money(item.purchaseAmount)}</td>
+      <td data-label="Front Fee">N/A</td>
+      <td data-label="Units">N/A</td>
+      <td data-label="Buying NAV">N/A</td>
+      <td data-label="Daily NAV %"><span class="neutral">0.00%</span></td>
+      <td data-label="Current NAV">N/A</td>
+      <td class="private-value" data-label="Current Value">${money(item.currentValue)}</td>
+      <td class="${item.pnlPct >= 0 ? "green" : "red"}" data-label="P&L">${pct(item.pnlPct)}</td>
+      <td data-label="">
+        <button class="table-action-button" type="button" data-edit-fund="${item.symbol}" aria-label="Edit Cash">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>
+          <span>Edit</span>
+        </button>
+      </td>
+    </tr>
+  ` : `
     <tr data-symbol="${item.symbol}">
       <td data-label="Fund">
         <div class="asset-cell">
@@ -782,7 +980,7 @@ function renderHoldings() {
     <tr class="total-row">
       <td>Total</td>
       <td></td>
-      <td>${sorted.length} funds</td>
+      <td>${sorted.length} assets</td>
       <td class="private-value">${money(total.paid)}</td>
       <td></td>
       <td></td>
@@ -911,7 +1109,7 @@ function renderActivities() {
     list.innerHTML = `
       <div class="empty-panel-state">
         <strong>No fund activity yet</strong>
-        <span>Your buys, sells, switches, and imports will appear here.</span>
+        <span>Your buys, sells, dividends, cash movements, and imports will appear here.</span>
       </div>
     `;
     return;
@@ -920,7 +1118,7 @@ function renderActivities() {
   list.innerHTML = visibleActivities.map((item) => `
     <div class="activity-row" data-edit-activity="${item.id}">
       <span class="activity-date">${item.date}</span>
-      <span class="badge ${{ Buy: "", Sell: "sell", Switch: "switch-type", Dividend: "dividend", Transfer: "transfer", Import: "import-type", Deposit: "deposit" }[item.type] ?? "import-type"}">${item.type}</span>
+      <span class="badge ${{ Buy: "", Sell: "sell", Switch: "switch-type", Dividend: "dividend", Transfer: "transfer", Import: "import-type", Deposit: "deposit", Withdraw: "withdraw" }[item.type] ?? "import-type"}">${item.type}</span>
       <strong>${item.type === "Switch" && item.switch ? `${item.switch.fromSymbol} → ${item.switch.toSymbol}` : item.asset}</strong>
       <span class="activity-transaction">
         <b class="private-value">${activityAmountLabel(item)}</b>
@@ -941,15 +1139,20 @@ function formatActivityUnits(value) {
 }
 
 function activityAmountLabel(activity) {
+  if (activity.type === "Withdraw") return `-${money(activity.amount)}`;
   if (activity.type === "Dividend") return money(dividendNetAmount(activity));
   return money(activity.amount);
 }
 
 function activityDetailLabel(activity) {
+  if (activity.type === "Sell" && activity.depositedToCash) return "Deposited to Cash";
+  if (activity.type === "Buy" && activity.fromCash) return `Paid from Cash${activity.units ? ` · ${formatActivityUnits(activity.units)}` : ""}`;
+  if (activity.type === "Deposit") return "Added to Cash";
+  if (activity.type === "Withdraw") return "Removed from Cash";
   if (activity.type !== "Dividend") return formatActivityUnits(activity.units);
   const tax = dividendTaxAmount(activity);
-  const gross = dividendGrossAmount(activity);
-  return tax > 0 ? `Tax ${money(tax)}` : `Dividend received`;
+  const prefix = activity.depositedToCash ? "Deposited to Cash" : "Dividend received";
+  return tax > 0 ? `${prefix} · Tax ${money(tax)}` : prefix;
 }
 
 function parseUnits(value) {
@@ -970,7 +1173,14 @@ function activityAffectsHolding(type) {
   return type === "Buy" || type === "Sell";
 }
 
-function previewOrderEffect(holding, type, units, amount, direction = 1) {
+function sellCostBasis(holding, units) {
+  const currentUnits = Number(holding.units || 0);
+  const currentAmount = Number(holding.purchaseAmount || 0);
+  if (units >= currentUnits - 0.0001) return currentAmount;
+  return currentUnits > 0 ? currentAmount * (units / currentUnits) : 0;
+}
+
+function previewOrderEffect(holding, type, units, amount, direction = 1, costBasisOverride) {
   const currentUnits = Number(holding.units || 0);
   const currentAmount = Number(holding.purchaseAmount || 0);
   let nextUnits = currentUnits;
@@ -984,7 +1194,7 @@ function previewOrderEffect(holding, type, units, amount, direction = 1) {
     nextAmount = isFullSell ? 0 : currentAmount - costReduction;
   } else if (type === "Sell" && direction === -1) {
     nextUnits = currentUnits + units;
-    nextAmount = currentAmount + amount;
+    nextAmount = currentAmount + Number(costBasisOverride ?? amount);
   } else {
     const unitMove = type === "Buy" ? units : 0;
     const amountMove = type === "Buy" ? amount : 0;
@@ -1000,7 +1210,7 @@ function previewOrderEffect(holding, type, units, amount, direction = 1) {
   };
 }
 
-function applyOrderToHolding(holding, type, units, amount, direction = 1) {
+function applyOrderToHolding(holding, type, units, amount, direction = 1, costBasisOverride) {
   const wasArchived = {
     archived: Boolean(holding.archived),
     archivedAt: holding.archivedAt,
@@ -1012,7 +1222,7 @@ function applyOrderToHolding(holding, type, units, amount, direction = 1) {
   };
   const previousUnits = Number(holding.units || 0);
   const previousAmount = Number(holding.purchaseAmount || 0);
-  const next = previewOrderEffect(holding, type, units, amount, direction);
+  const next = previewOrderEffect(holding, type, units, amount, direction, costBasisOverride);
   if (!next) return false;
 
   holding.units = next.units;
@@ -1136,18 +1346,36 @@ function applySwitch(data, direction = 1) {
 
 // Forward/reverse an activity's effect on holdings, routing switches to applySwitch
 // and buys/sells to applyOrderToHolding.
-function reverseActivityEffect(activity) {
+function reverseHoldingEffect(activity) {
   if (activity.type === "Switch" && activity.switch) return applySwitch(activity.switch, -1);
   const holding = holdings.find((item) => item.symbol === activity.asset);
   if (!activityAffectsHolding(activity.type) || !holding) return true;
-  return applyOrderToHolding(holding, activity.type, activityUnitCount(activity), Number(activity.amount || 0), -1);
+  return applyOrderToHolding(holding, activity.type, activityUnitCount(activity), Number(activity.amount || 0), -1, Number(activity.cashBasisAmount || 0) || undefined);
 }
 
-function applyActivityEffect(activity) {
+function applyHoldingEffect(activity) {
   if (activity.type === "Switch" && activity.switch) return applySwitch(activity.switch, 1);
   const holding = holdings.find((item) => item.symbol === activity.asset);
   if (!activityAffectsHolding(activity.type) || !holding) return true;
   return applyOrderToHolding(holding, activity.type, activityUnitCount(activity), Number(activity.amount || 0), 1);
+}
+
+function reverseActivityEffect(activity) {
+  if (!reverseHoldingEffect(activity)) return false;
+  if (!applyCashEffect(activity, -1)) {
+    applyHoldingEffect(activity);
+    return false;
+  }
+  return true;
+}
+
+function applyActivityEffect(activity) {
+  if (!applyHoldingEffect(activity)) return false;
+  if (!applyCashEffect(activity, 1)) {
+    reverseHoldingEffect(activity);
+    return false;
+  }
+  return true;
 }
 
 function computeNiceTicks(dataMin, dataMax, count = 5) {
@@ -1590,8 +1818,8 @@ function renderChannelExposure() {
         const [bank, port] = group.key.split("||");
         return `
           <button class="channel-row" data-action="${bank} ${port} selected">
-            <span><b>${bank}</b><small>${port} · ${group.items.length} fund${group.items.length === 1 ? "" : "s"}</small></span>
-            <strong><span class="private-value">${money(group.amount)}</span><small>${group.pct.toFixed(1)}% of funds</small></strong>
+            <span><b>${bank}</b><small>${port} · ${group.items.length} asset${group.items.length === 1 ? "" : "s"}</small></span>
+            <strong><span class="private-value">${money(group.amount)}</span><small>${group.pct.toFixed(1)}% of assets</small></strong>
             <span class="channel-track" aria-hidden="true"><i style="width:${Math.max(group.pct, 2).toFixed(1)}%"></i></span>
           </button>
         `;
@@ -1678,6 +1906,7 @@ function refreshPrices() {
 
   window.setTimeout(() => {
     holdings.forEach((fund) => {
+      if (isCashHolding(fund)) return;
       const movement = 0.995 + Math.random() * 0.016;
       const baseNav = Number(fund.baseNav ?? fund.currentNav ?? fund.buyingNav);
       fund.baseNav = Number((baseNav * movement).toFixed(4));
@@ -1727,6 +1956,17 @@ function importSampleData() {
   importedHoldings.forEach((item) => {
     const symbol = String(item.symbol || item.fundCode || "").trim().toUpperCase();
     if (!symbol) return;
+
+    if (isCashHolding({ ...item, symbol })) {
+      const next = normalizeCashHolding({ ...item, symbol });
+      const existingIndex = holdings.findIndex(isCashHolding);
+      if (existingIndex >= 0) {
+        holdings[existingIndex] = { ...holdings[existingIndex], ...next };
+      } else if (next.cashBalance > 0) {
+        holdings.push(next);
+      }
+      return;
+    }
 
     const next = {
       symbol,
@@ -1822,30 +2062,48 @@ function buildExportPayload() {
     exportedAt: new Date().toISOString(),
     currency: state.currency,
     logDate: activeDateKey(),
-    holdings: holdings.map(({ symbol, name, bank, port, category, navCurrency, fxRate, buyFxRate, purchaseAmount, frontFeeRate, navLagDays, units, buyingNav, currentNav, baseNav, dailyChangePct, navHistory, archived, archivedAt, archivedDate, archivedSaleAmount, archivedUnits, archivedPnl, archivedPnlPct }) => ({
-      symbol,
-      name,
-      bank,
-      port,
-      category,
-      navCurrency: navCurrency || "THB",
-      ...(navCurrency && navCurrency !== "THB" ? { fxRate: fxRate || 1, buyFxRate: buyFxRate || fxRate || 1 } : {}),
-      purchaseAmount,
-      frontFeeRate,
-      navLagDays: normalizedNavLagDays({ navLagDays }),
-      units,
-      buyingNav,
-      currentNav: baseNav ?? currentNav,
-      navHistory: normalizeNavHistory({ navHistory, dailyChangePct }),
-      dailyChangePct: dailyChangePct || 0,
-      archived: Boolean(archived),
-      archivedAt,
-      archivedDate,
-      archivedSaleAmount,
-      archivedUnits,
-      archivedPnl,
-      archivedPnlPct,
-    })),
+    holdings: holdings.map((holding) => {
+      if (isCashHolding(holding)) {
+        const cash = normalizeCashHolding(holding);
+        return {
+          symbol: CASH_SYMBOL,
+          name: cash.name,
+          bank: cash.bank,
+          port: cash.port,
+          category: CASH_CATEGORY,
+          isCash: true,
+          cashBalance: cash.cashBalance,
+          cashBasis: cash.cashBasis,
+          purchaseAmount: cash.cashBasis,
+        };
+      }
+
+      const { symbol, name, bank, port, category, navCurrency, fxRate, buyFxRate, purchaseAmount, frontFeeRate, navLagDays, units, buyingNav, currentNav, baseNav, dailyChangePct, navHistory, archived, archivedAt, archivedDate, archivedSaleAmount, archivedUnits, archivedPnl, archivedPnlPct } = holding;
+      return {
+        symbol,
+        name,
+        bank,
+        port,
+        category,
+        navCurrency: navCurrency || "THB",
+        ...(navCurrency && navCurrency !== "THB" ? { fxRate: fxRate || 1, buyFxRate: buyFxRate || fxRate || 1 } : {}),
+        purchaseAmount,
+        frontFeeRate,
+        navLagDays: normalizedNavLagDays({ navLagDays }),
+        units,
+        buyingNav,
+        currentNav: baseNav ?? currentNav,
+        navHistory: normalizeNavHistory({ navHistory, dailyChangePct }),
+        dailyChangePct: dailyChangePct || 0,
+        archived: Boolean(archived),
+        archivedAt,
+        archivedDate,
+        archivedSaleAmount,
+        archivedUnits,
+        archivedPnl,
+        archivedPnlPct,
+      };
+    }),
     activities,
     portfolioSnapshots: normalizePortfolioSnapshots(portfolioSnapshots),
   };
@@ -1869,6 +2127,25 @@ function exportJson() {
 function openEditFundDialog(symbol) {
   const rawFund = holdings.find((item) => item.symbol === symbol);
   if (!rawFund) return;
+
+  if (isCashHolding(rawFund)) {
+    const cash = normalizeCashHolding(rawFund);
+    const dialog = document.querySelector("#actionDialog");
+    const fields = document.querySelector("#dialogFields");
+    state.action = "Edit Cash";
+    state.editingSymbol = CASH_SYMBOL;
+
+    document.querySelector("#dialogTitle").textContent = "Edit Cash";
+    document.querySelector("#dialogCopy").textContent = "Update the visible cash balance and label. Use cash transactions for normal deposits, withdrawals, dividends, and reinvestment.";
+    document.querySelector("#confirmAction").textContent = "Save Changes";
+    document.querySelector("#deleteFund").hidden = true;
+    fields.className = "dialog-fields two-column";
+    fields.innerHTML = cashFieldMarkup(cash);
+
+    if (dialog.showModal) dialog.showModal();
+    else showToast("Editing Cash");
+    return;
+  }
 
   const fund = deriveFund(rawFund);
   const dialog = document.querySelector("#actionDialog");
@@ -1903,7 +2180,9 @@ function openEditActivityDialog(id) {
 
   document.querySelector("#dialogTitle").textContent = `Edit ${activity.asset} order`;
   document.querySelector("#dialogCopy").textContent = activity.type === "Dividend"
-    ? "Correct the dividend cash and tax record. It adjusts return without changing units."
+    ? "Correct the dividend cash and tax record. New dividend cash is deposited to Cash without changing fund units."
+    : activity.type === "Deposit" || activity.type === "Withdraw"
+      ? "Correct this cash movement. The Cash row updates after saving."
     : "Correct the activity record. Buy and sell changes will also recalculate the fund holding.";
   document.querySelector("#confirmAction").textContent = "Save Changes";
   const deleteButton = document.querySelector("#deleteFund");
@@ -1932,6 +2211,7 @@ function openEditActivityDialog(id) {
         asset: activity.asset,
         units: activityUnitCount(activity) || "",
         amount: activity.amount,
+        fromCash: Boolean(activity.fromCash),
         sellAll: activity.type === "Sell" && holdings.find((item) => item.symbol === activity.asset)?.units === 0,
       };
   fields.innerHTML = transactionFieldMarkup(activity.type, editValues);
@@ -1946,14 +2226,14 @@ function openEditActivityDialog(id) {
 
 function transactionTypeOptions() {
   return state.action === "Edit Transaction"
-    ? ["Buy", "Sell", "Switch", "Dividend", "Transfer", "Import"]
-    : ["Buy", "Sell", "Switch", "Dividend", "Transfer"];
+    ? ["Buy", "Sell", "Switch", "Dividend", "Deposit", "Withdraw", "Transfer", "Import"]
+    : ["Buy", "Sell", "Switch", "Dividend", "Deposit", "Withdraw", "Transfer"];
 }
 
 function transactionFundOptions(extra = []) {
   const base = state.action === "Edit Transaction"
-    ? holdings.map((item) => item.symbol)
-    : activeRawHoldings().map((item) => item.symbol);
+    ? holdings.filter((item) => !isCashHolding(item)).map((item) => item.symbol)
+    : activeFundHoldings().map((item) => item.symbol);
   return [...new Set([...base, ...extra].filter(Boolean))];
 }
 
@@ -1987,14 +2267,33 @@ function transactionFieldMarkup(type, values = {}) {
     ]) + `<div class="order-preview" id="dividendPreview" aria-live="polite"></div>`;
   }
 
-  return fieldMarkup([
+  if (type === "Deposit" || type === "Withdraw") {
+    const afterAmount = type === "Deposit"
+      ? cashBalance() + Number(values.amount || 0)
+      : cashBalance() - Number(values.amount || 0);
+    return fieldMarkup([
+      dateField,
+      typeField,
+      { id: "transactionAmount", label: type === "Deposit" ? "Cash deposited" : "Cash withdrawn", type: "number", step: "0.01", value: values.amount ?? "", min: "0" },
+    ]) + `<div class="order-preview" id="cashPreview" aria-live="polite">
+      <div class="order-preview-row"><span>Cash balance after ${type.toLowerCase()}</span><b>${money(Math.max(afterAmount, 0))}</b></div>
+    </div>`;
+  }
+
+  const fields = [
     dateField,
     typeField,
     { id: "transactionAsset", label: "Fund", kind: "select", options: transactionFundOptions([values.asset]), value: values.asset },
     { id: "transactionUnits", label: "Units", value: values.units ?? "" },
     { id: "transactionAmount", label: "Amount", type: "number", step: "0.01", value: values.amount ?? "1500", min: "0" },
-    { id: "transactionSellAll", label: "Sell all units in this fund", kind: "checkbox", checked: Boolean(values.sellAll) },
-  ]);
+  ];
+
+  if (type === "Buy") {
+    fields.push({ id: "transactionUseCash", label: `Use Cash balance for this buy (${money(cashBalance())} available)`, kind: "checkbox", checked: Boolean(values.fromCash) });
+  }
+
+  fields.push({ id: "transactionSellAll", label: "Sell all units in this fund", kind: "checkbox", checked: Boolean(values.sellAll) });
+  return fieldMarkup(fields);
 }
 
 function readTransactionFormValues() {
@@ -2010,6 +2309,7 @@ function readTransactionFormValues() {
     switchOutNav: field("transactionSwitchOutNav")?.value,
     buyingNav: field("transactionBuyingNav")?.value,
     sellAll: field("transactionSellAll")?.checked,
+    fromCash: field("transactionUseCash")?.checked,
   };
 }
 
@@ -2038,9 +2338,29 @@ function bindOrderFormHelpers() {
     bindSwitchHelpers();
   } else if (typeInput.value === "Dividend") {
     bindDividendHelpers();
+  } else if (typeInput.value === "Deposit" || typeInput.value === "Withdraw") {
+    bindCashMovementHelpers();
   } else {
     bindBuySellHelpers();
   }
+}
+
+function bindCashMovementHelpers() {
+  const typeInput = document.querySelector("#transactionType");
+  const amountInput = document.querySelector("#transactionAmount");
+  const preview = document.querySelector("#cashPreview");
+  if (!typeInput || !amountInput || !preview) return;
+
+  const renderPreview = () => {
+    const amount = Number(amountInput.value || 0);
+    const nextBalance = typeInput.value === "Withdraw" ? cashBalance() - amount : cashBalance() + amount;
+    preview.innerHTML = amount > 0
+      ? `<div class="order-preview-row"><span>Cash balance after ${typeInput.value.toLowerCase()}</span><b>${money(Math.max(nextBalance, 0))}</b></div>`
+      : `<span class="order-preview-hint">Enter the cash amount to ${typeInput.value.toLowerCase()}.</span>`;
+  };
+
+  amountInput.addEventListener("input", renderPreview);
+  renderPreview();
 }
 
 function bindDividendHelpers() {
@@ -2079,15 +2399,17 @@ function bindBuySellHelpers() {
   const assetInput = document.querySelector("#transactionAsset");
   const unitsInput = document.querySelector("#transactionUnits");
   const sellAllInput = document.querySelector("#transactionSellAll");
-  if (!typeInput || !assetInput || !unitsInput || !sellAllInput) return;
+  const useCashInput = document.querySelector("#transactionUseCash");
+  if (!typeInput || !assetInput || !unitsInput) return;
 
   const syncSellAll = () => {
-    const isSellAll = typeInput.value === "Sell" && sellAllInput.checked;
+    const isSellAll = typeInput.value === "Sell" && Boolean(sellAllInput?.checked);
     const holding = holdings.find((item) => item.symbol === assetInput.value);
-    sellAllInput.closest("label")?.classList.toggle("is-disabled", typeInput.value !== "Sell");
+    sellAllInput?.closest("label")?.classList.toggle("is-disabled", typeInput.value !== "Sell");
+    useCashInput?.closest("label")?.classList.toggle("is-disabled", typeInput.value !== "Buy");
     unitsInput.readOnly = isSellAll;
     if (typeInput.value !== "Sell") {
-      sellAllInput.checked = false;
+      if (sellAllInput) sellAllInput.checked = false;
       unitsInput.readOnly = false;
       return;
     }
@@ -2097,7 +2419,7 @@ function bindBuySellHelpers() {
   };
 
   assetInput.addEventListener("change", syncSellAll);
-  sellAllInput.addEventListener("change", syncSellAll);
+  sellAllInput?.addEventListener("change", syncSellAll);
   syncSellAll();
 }
 
@@ -2176,11 +2498,6 @@ function openActionDialog(action) {
     return;
   }
 
-  if (action === "Add Transaction" && activeRawHoldings().length === 0) {
-    showToast("Add a fund before recording an order.");
-    return;
-  }
-
   if (action === "View Analytics" || action === "View all activity") {
     focusAnalytics();
     return;
@@ -2206,7 +2523,7 @@ function openActionDialog(action) {
   }[action] || action;
   document.querySelector("#dialogCopy").textContent = {
     "Add Asset": "Add a mutual fund with its own front fee. For a USD fund, set NAV currency to USD and add the buy/current FX rate — value and P&L convert to THB automatically.",
-    "Add Transaction": "Record a buy, sell, switch, dividend, or transfer. Dividends count toward return without changing units.",
+    "Add Transaction": "Record a buy, sell, switch, dividend, deposit, withdrawal, or transfer. New dividends and sell proceeds move into Cash.",
     "Import Data": "Paste mutual-fund JSON to merge it into the portfolio.",
   }[action] || "This workflow is ready.";
   fields.className = "dialog-fields";
@@ -2217,7 +2534,7 @@ function openActionDialog(action) {
     bindAssetFormHelpers();
   } else if (action === "Add Transaction") {
     fields.classList.add("two-column");
-    fields.innerHTML = transactionFieldMarkup("Buy");
+    fields.innerHTML = transactionFieldMarkup(activeFundHoldings().length > 0 ? "Buy" : "Deposit");
     bindOrderFormHelpers();
   } else if (action === "Import Data") {
     fields.innerHTML = fieldMarkup([
@@ -2254,7 +2571,25 @@ function handleConfirm(event) {
   const getValue = (id) => document.querySelector(`#${id}`)?.value.trim() || "";
   const isChecked = (id) => Boolean(document.querySelector(`#${id}`)?.checked);
 
-  if (state.action === "Add Asset" || state.action === "Edit Asset") {
+  if (state.action === "Edit Cash") {
+    const values = readCashFormValues();
+    if (values.cashBalance < 0 || values.cashBasis < 0) {
+      showToast("Cash balance and basis cannot be negative.");
+      return;
+    }
+
+    const cash = cashHolding({ create: values.cashBalance > 0 });
+    if (!cash) {
+      showToast("Cash balance is zero, so there is nothing to save.");
+      dialog.close();
+      return;
+    }
+
+    Object.assign(cash, normalizeCashHolding(values));
+    savePortfolio();
+    renderAll();
+    showToast("Cash updated.");
+  } else if (state.action === "Add Asset" || state.action === "Edit Asset") {
     const symbol = getValue("assetSymbol").toUpperCase();
     const name = getValue("assetName");
     const bank = getValue("assetBank") || "Unassigned Bank";
@@ -2280,6 +2615,11 @@ function handleConfirm(event) {
 
     if (!symbol || !name || investedTHB <= 0 || buyingNav <= 0 || currentNav <= 0) {
       showToast("Fund needs code, name, invested amount, buying NAV, and current NAV.");
+      return;
+    }
+
+    if (symbol === CASH_SYMBOL) {
+      showToast("CASH is reserved for the cash balance.");
       return;
     }
 
@@ -2364,6 +2704,8 @@ function handleConfirm(event) {
     let unitCount = parseUnits(getValue("transactionUnits"));
     let holding = holdings.find((item) => item.symbol === asset);
     const sellAll = type === "Sell" && isChecked("transactionSellAll");
+    const fromCash = type === "Buy" && isChecked("transactionUseCash");
+    let cashBasisAmount = 0;
 
     if (type === "Switch") {
       const fromSymbol = getValue("transactionAsset");
@@ -2397,6 +2739,18 @@ function handleConfirm(event) {
         showToast("Dividend gross amount should be at least the net cash received.");
         return;
       }
+    } else if (type === "Deposit" || type === "Withdraw") {
+      asset = CASH_SYMBOL;
+      holding = cashHolding({ create: type === "Deposit" });
+      if (amount <= 0) {
+        showToast(`${type} needs a cash amount.`);
+        return;
+      }
+      if (type === "Withdraw" && amount > cashBalance() + 0.005) {
+        showToast("Cash balance is not high enough for that withdrawal.");
+        return;
+      }
+      cashBasisAmount = type === "Withdraw" ? cashBasisForWithdrawal(amount) : amount;
     } else {
       if (!asset || !holding || amount <= 0) {
         showToast("Order needs a fund and amount.");
@@ -2411,11 +2765,19 @@ function handleConfirm(event) {
         showToast(`${type} order needs units so the holding can update.`);
         return;
       }
-    }
 
-    const applyNew = () => type === "Switch"
-      ? applySwitch(newSwitchData, 1)
-      : activityAffectsHolding(type) ? applyOrderToHolding(holding, type, unitCount, amount, 1) : true;
+      if (type === "Buy" && fromCash) {
+        if (amount > cashBalance() + 0.005) {
+          showToast("Cash balance is not high enough for this buy.");
+          return;
+        }
+        cashBasisAmount = cashBasisForWithdrawal(amount);
+      }
+
+      if (type === "Sell") {
+        cashBasisAmount = sellCostBasis(holding, unitCount);
+      }
+    }
 
     const activityUnitsLabel = () => type === "Switch"
       ? `-${newSwitchData.sourceUnits.toFixed(4)}`
@@ -2424,6 +2786,42 @@ function handleConfirm(event) {
     const dividendFields = () => type === "Dividend"
       ? { grossAmount, taxAmount, netAmount: amount }
       : {};
+
+    const cashFields = () => {
+      if (type === "Dividend") return { depositedToCash: true, cashAmount: amount, cashBasisAmount: 0 };
+      if (type === "Sell") return { depositedToCash: true, cashAmount: amount, cashBasisAmount };
+      if (type === "Buy" && fromCash) return { fromCash: true, cashAmount: amount, cashBasisAmount };
+      if (type === "Deposit" || type === "Withdraw") return { cashAmount: amount, cashBasisAmount };
+      return {};
+    };
+
+    const buildActivity = (existing = {}) => {
+      const next = {
+        ...existing,
+        date: readableDate(activityDate),
+        createdAt: existing.createdAt || new Date().toISOString(),
+        type,
+        asset,
+        units: activityUnitsLabel(),
+        amount,
+        ...dividendFields(),
+        ...cashFields(),
+      };
+      if (type === "Switch") next.switch = newSwitchData;
+      else delete next.switch;
+      if (type !== "Dividend") {
+        delete next.grossAmount;
+        delete next.taxAmount;
+        delete next.netAmount;
+      }
+      if (!(type === "Dividend" || type === "Sell")) delete next.depositedToCash;
+      if (!(type === "Buy" && fromCash)) delete next.fromCash;
+      if (!(type === "Dividend" || type === "Sell" || type === "Deposit" || type === "Withdraw" || (type === "Buy" && fromCash))) {
+        delete next.cashAmount;
+        delete next.cashBasisAmount;
+      }
+      return next;
+    };
 
     if (state.action === "Edit Transaction") {
       const activity = activities.find((item) => item.id === state.editingActivityId);
@@ -2440,9 +2838,11 @@ function handleConfirm(event) {
       if (sellAll) {
         const updatedHolding = holdings.find((item) => item.symbol === asset);
         unitCount = Number(updatedHolding?.units || 0);
+        if (type === "Sell") cashBasisAmount = sellCostBasis(updatedHolding, unitCount);
       }
 
-      if (!applyNew()) {
+      const nextActivity = buildActivity(activity);
+      if (!applyActivityEffect(nextActivity)) {
         applyActivityEffect(activity);
         showToast(type === "Switch"
           ? "Source fund no longer has enough units for this switch."
@@ -2450,41 +2850,29 @@ function handleConfirm(event) {
         return;
       }
 
-      Object.assign(activity, {
-        date: readableDate(activityDate),
-        createdAt: activity.createdAt || new Date().toISOString(),
-        type,
-        asset,
-        units: activityUnitsLabel(),
-        amount,
-        ...dividendFields(),
-      });
-      if (type === "Switch") activity.switch = newSwitchData;
-      else delete activity.switch;
-      if (type !== "Dividend") {
-        delete activity.grossAmount;
-        delete activity.taxAmount;
-        delete activity.netAmount;
-      }
+      Object.assign(activity, nextActivity);
       state.editingActivityId = "";
       savePortfolio();
       renderAll();
       const updatedMessage = type === "Dividend"
-        ? `${asset} dividend updated. Return recalculated.`
+        ? `${asset} dividend updated and deposited to Cash.`
+        : type === "Deposit" || type === "Withdraw"
+          ? `Cash ${type.toLowerCase()} updated.`
         : `${asset} activity updated. Holding recalculated.`;
       showToast(isWeekendDate(requestedActivityDate)
         ? `${asset} activity updated on ${readableDate(activityDate)} because weekend dates are blocked.`
         : updatedMessage);
     } else {
-      if (!applyNew()) {
+      const newActivity = buildActivity({ id: makeId("activity") });
+      if (!applyActivityEffect(newActivity)) {
         showToast(type === "Switch"
           ? "Source fund doesn't have enough units to switch that amount."
+          : type === "Buy" && fromCash
+            ? "Cash balance is not high enough for this buy."
           : "Order is larger than the current holding.");
         return;
       }
 
-      const newActivity = { id: makeId("activity"), date: readableDate(activityDate), createdAt: new Date().toISOString(), type, asset, units: activityUnitsLabel(), amount, ...dividendFields() };
-      if (type === "Switch") newActivity.switch = newSwitchData;
       activities.unshift(newActivity);
       savePortfolio();
       renderAll();
@@ -2495,11 +2883,15 @@ function handleConfirm(event) {
       } else if (type === "Dividend") {
         showToast(isWeekendDate(requestedActivityDate)
           ? `Dividend recorded for ${asset} on ${readableDate(activityDate)} because weekend dates are blocked.`
-          : `Dividend recorded for ${asset}. Return updated without changing units.`);
+          : `Dividend recorded for ${asset} and deposited to Cash.`);
+      } else if (type === "Deposit" || type === "Withdraw") {
+        showToast(isWeekendDate(requestedActivityDate)
+          ? `Cash ${type.toLowerCase()} recorded on ${readableDate(activityDate)} because weekend dates are blocked.`
+          : `Cash ${type.toLowerCase()} recorded.`);
       } else {
         showToast(isWeekendDate(requestedActivityDate)
           ? `${type} order recorded for ${asset} on ${readableDate(activityDate)} because weekend dates are blocked.`
-          : `${type} order recorded for ${asset}. Holding updated.`);
+          : `${type} order recorded for ${asset}. ${type === "Sell" ? "Proceeds moved to Cash." : fromCash ? "Cash balance reduced." : "Holding updated."}`);
       }
     }
   } else if (state.action === "Import Data") {
