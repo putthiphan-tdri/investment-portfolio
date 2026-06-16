@@ -384,9 +384,7 @@ function isCashHolding(item = {}) {
 
 function normalizeCashHolding(item = {}) {
   const balance = Number(item.cashBalance ?? item.currentValue ?? item.updatedAmount ?? item.purchaseAmount ?? 0);
-  const basis = Number(item.cashBasis ?? item.purchaseAmount ?? balance);
   const safeBalance = Number.isFinite(balance) ? Math.max(balance, 0) : 0;
-  const safeBasis = Number.isFinite(basis) ? Math.max(basis, 0) : safeBalance;
   return {
     ...item,
     symbol: CASH_SYMBOL,
@@ -397,8 +395,8 @@ function normalizeCashHolding(item = {}) {
     isCash: true,
     navCurrency: "THB",
     cashBalance: safeBalance,
-    cashBasis: safeBalance <= 0 ? 0 : safeBasis,
-    purchaseAmount: safeBalance <= 0 ? 0 : safeBasis,
+    cashBasis: safeBalance,
+    purchaseAmount: safeBalance,
     frontFeeRate: 0,
     navLagDays: 0,
     units: safeBalance,
@@ -425,24 +423,19 @@ function cashBalance() {
 }
 
 function cashBasisForWithdrawal(amount) {
-  const cash = cashHolding();
-  if (!cash) return amount;
-  const balance = Number(cash.cashBalance || 0);
-  if (balance <= 0) return amount;
-  return Number(cash.cashBasis || 0) * Math.min(Math.max(amount, 0) / balance, 1);
+  return Math.max(Number(amount || 0), 0);
 }
 
 function applyCashDelta(valueDelta, basisDelta) {
   const cash = cashHolding({ create: valueDelta > 0 || basisDelta > 0 });
-  if (!cash) return Math.abs(valueDelta) < 0.005 && Math.abs(basisDelta) < 0.005;
+  if (!cash) return Math.abs(valueDelta) < 0.005;
 
   const nextBalance = Number(cash.cashBalance || 0) + valueDelta;
-  const nextBasis = Number(cash.cashBasis || 0) + basisDelta;
-  if (nextBalance < -0.005 || nextBasis < -0.005) return false;
+  if (nextBalance < -0.005) return false;
 
   cash.cashBalance = Math.max(nextBalance, 0);
-  cash.cashBasis = cash.cashBalance <= 0 ? 0 : Math.max(nextBasis, 0);
-  cash.purchaseAmount = cash.cashBasis;
+  cash.cashBasis = cash.cashBalance;
+  cash.purchaseAmount = cash.cashBalance;
   cash.units = cash.cashBalance;
   cash.currentNav = 1;
   cash.buyingNav = 1;
@@ -550,9 +543,9 @@ function deriveFund(fund) {
   if (isCashHolding(fund)) {
     const cash = normalizeCashHolding(fund);
     const currentValue = Number(cash.cashBalance || 0);
-    const purchaseAmount = Number(cash.cashBasis || 0);
-    const pnlBaht = currentValue - purchaseAmount;
-    const pnlPct = purchaseAmount > 0 ? (pnlBaht / purchaseAmount) * 100 : 0;
+    const purchaseAmount = currentValue;
+    const pnlBaht = 0;
+    const pnlPct = 0;
     return {
       ...cash,
       units: currentValue,
@@ -809,7 +802,6 @@ function cashAssetFieldMarkup(cash = {}) {
     { id: "cashBank", label: "Bank / channel", value: cash.bank || cash.assetBank || "Cash" },
     { id: "cashPort", label: "Port", value: cash.port || cash.assetPort || "Uninvested" },
     { id: "cashBalance", label: "Cash balance", type: "number", step: "0.01", value: cash.cashBalance ?? cash.assetPurchase ?? "", min: "0" },
-    { id: "cashBasis", label: "Cash basis for P&L", type: "number", step: "0.01", value: cash.cashBasis ?? cash.cashBalance ?? cash.assetPurchase ?? "", min: "0" },
   ]);
 }
 
@@ -865,7 +857,6 @@ function cashFieldMarkup(cash = {}) {
     { id: "cashBank", label: "Bank / channel", value: cash.bank || "Cash" },
     { id: "cashPort", label: "Port", value: cash.port || "Uninvested" },
     { id: "cashBalance", label: "Cash balance", type: "number", step: "0.01", value: cash.cashBalance ?? "", min: "0" },
-    { id: "cashBasis", label: "Cash basis for P&L", type: "number", step: "0.01", value: cash.cashBasis ?? cash.cashBalance ?? "", min: "0" },
   ]);
 }
 
@@ -876,7 +867,7 @@ function readCashFormValues() {
     bank: field("cashBank")?.value || "Cash",
     port: field("cashPort")?.value || "Uninvested",
     cashBalance: Number(field("cashBalance")?.value || 0),
-    cashBasis: Number(field("cashBasis")?.value || 0),
+    cashBasis: Number(field("cashBalance")?.value || 0),
   };
 }
 
@@ -2095,8 +2086,8 @@ function buildExportPayload() {
           category: CASH_CATEGORY,
           isCash: true,
           cashBalance: cash.cashBalance,
-          cashBasis: cash.cashBasis,
-          purchaseAmount: cash.cashBasis,
+          cashBasis: cash.cashBalance,
+          purchaseAmount: cash.cashBalance,
         };
       }
 
@@ -2595,8 +2586,8 @@ function handleConfirm(event) {
 
   if (state.action === "Edit Cash" || (state.action === "Add Asset" && getValue("assetCategory") === CASH_CATEGORY)) {
     const values = readCashFormValues();
-    if (values.cashBalance < 0 || values.cashBasis < 0) {
-      showToast("Cash balance and basis cannot be negative.");
+    if (values.cashBalance < 0) {
+      showToast("Cash balance cannot be negative.");
       return;
     }
 
