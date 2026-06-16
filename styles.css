@@ -1669,6 +1669,11 @@ th[data-col].sort-desc::after {
   background: #fff2df;
 }
 
+.badge.dividend {
+  color: #008a61;
+  background: #e8f7ef;
+}
+
 .badge.sell {
   color: var(--red);
   background: #fff0f0;

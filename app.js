@@ -279,7 +279,11 @@ function normalizeActivities(items) {
     type: String(item.type || "Import"),
     asset: String(item.asset || item.symbol || item.fundCode || "Imported"),
     units: String(item.units || ""),
-    amount: Number(item.amount || 0),
+    amount: Number(item.amount ?? item.netAmount ?? item.netDividend ?? 0),
+    grossAmount: Number(item.grossAmount ?? item.grossDividend ?? item.dividendGross ?? 0),
+    taxAmount: Number(item.taxAmount ?? item.withholdingTax ?? item.dividendTax ?? 0),
+    netAmount: Number(item.netAmount ?? item.netDividend ?? item.amount ?? 0),
+    ...(item.switch ? { switch: item.switch } : {}),
   }));
 }
 
@@ -291,6 +295,31 @@ function activitySortValue(activity) {
 
 function sortedActivities() {
   return [...activities].sort((a, b) => activitySortValue(b) - activitySortValue(a));
+}
+
+function dividendNetAmount(activity) {
+  return Number(activity.netAmount ?? activity.amount ?? 0) || 0;
+}
+
+function dividendTaxAmount(activity) {
+  return Number(activity.taxAmount ?? activity.withholdingTax ?? 0) || 0;
+}
+
+function dividendGrossAmount(activity) {
+  const gross = Number(activity.grossAmount ?? activity.grossDividend ?? 0) || 0;
+  if (gross > 0) return gross;
+  return dividendNetAmount(activity) + dividendTaxAmount(activity);
+}
+
+function dividendTotalsForFund(symbol) {
+  return activities
+    .filter((activity) => activity.type === "Dividend" && activity.asset === symbol)
+    .reduce((totals, activity) => {
+      totals.net += dividendNetAmount(activity);
+      totals.tax += dividendTaxAmount(activity);
+      totals.gross += dividendGrossAmount(activity);
+      return totals;
+    }, { net: 0, tax: 0, gross: 0 });
 }
 
 function money(value, decimals = 2) {
@@ -430,9 +459,10 @@ function deriveFund(fund) {
   const feePaid = Math.max(purchaseAmount - capitalInvested, 0);
   const currentValue = units * currentNav * currentFxRate;
   const baseValue = units * previousNav * currentFxRate;
-  const pnlBaht = currentValue - purchaseAmount;
+  const dividends = dividendTotalsForFund(fund.symbol);
+  const pnlBaht = currentValue + dividends.net - purchaseAmount;
   const pnlPct = purchaseAmount > 0 ? (pnlBaht / purchaseAmount) * 100 : 0;
-  return { ...fund, units, purchaseAmount, purchaseAmountNative, navCurrency, fxRate: currentFxRate, buyFxRate, frontFeeRate, navLagDays, dailyChangePct, navHistory, navDate, logDate: activeDateKey(), baseNav, offerNav, capitalInvested, feePaid, currentNav, baseValue, currentValue, updatedAmount: currentValue, pnlBaht, pnlPct };
+  return { ...fund, units, purchaseAmount, purchaseAmountNative, navCurrency, fxRate: currentFxRate, buyFxRate, frontFeeRate, navLagDays, dailyChangePct, navHistory, navDate, logDate: activeDateKey(), baseNav, offerNav, capitalInvested, feePaid, currentNav, baseValue, currentValue, updatedAmount: currentValue, dividends, pnlBaht, pnlPct };
 }
 
 function isArchivedFund(fund) {
@@ -890,11 +920,11 @@ function renderActivities() {
   list.innerHTML = visibleActivities.map((item) => `
     <div class="activity-row" data-edit-activity="${item.id}">
       <span class="activity-date">${item.date}</span>
-      <span class="badge ${{ Buy: "", Sell: "sell", Switch: "switch-type", Transfer: "transfer", Import: "import-type", Deposit: "deposit" }[item.type] ?? "import-type"}">${item.type}</span>
+      <span class="badge ${{ Buy: "", Sell: "sell", Switch: "switch-type", Dividend: "dividend", Transfer: "transfer", Import: "import-type", Deposit: "deposit" }[item.type] ?? "import-type"}">${item.type}</span>
       <strong>${item.type === "Switch" && item.switch ? `${item.switch.fromSymbol} → ${item.switch.toSymbol}` : item.asset}</strong>
       <span class="activity-transaction">
-        <b class="private-value">${money(item.amount)}</b>
-        <small class="private-value">${formatActivityUnits(item.units)}</small>
+        <b class="private-value">${activityAmountLabel(item)}</b>
+        <small class="private-value">${activityDetailLabel(item)}</small>
       </span>
       <span class="row-chevron" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="m7 4 6 6-6 6" /></svg></span>
     </div>
@@ -908,6 +938,18 @@ function renderActivities() {
 function formatActivityUnits(value) {
   const cleaned = String(value || "").replace(/^\+/, "").trim();
   return cleaned ? `${cleaned} units` : "";
+}
+
+function activityAmountLabel(activity) {
+  if (activity.type === "Dividend") return money(dividendNetAmount(activity));
+  return money(activity.amount);
+}
+
+function activityDetailLabel(activity) {
+  if (activity.type !== "Dividend") return formatActivityUnits(activity.units);
+  const tax = dividendTaxAmount(activity);
+  const gross = dividendGrossAmount(activity);
+  return tax > 0 ? `Tax ${money(tax)} · Gross ${money(gross)}` : `Dividend received`;
 }
 
 function parseUnits(value) {
@@ -1724,16 +1766,8 @@ function importSampleData() {
     }
   });
 
-  importedActivities.forEach((item) => {
-    activities.unshift({
-      id: makeId("activity"),
-      date: String(item.date || readableDate(activeDateKey())),
-      createdAt: item.createdAt || new Date().toISOString(),
-      type: String(item.type || "Import"),
-      asset: String(item.asset || item.symbol || item.fundCode || "Imported"),
-      units: String(item.units || ""),
-      amount: Number(item.amount || 0),
-    });
+  normalizeActivities(importedActivities).forEach((item) => {
+    activities.unshift({ ...item, id: makeId("activity") });
   });
 
   if (importedHoldings.length > 0 && importedActivities.length === 0) {
@@ -1868,7 +1902,9 @@ function openEditActivityDialog(id) {
   state.editingSymbol = "";
 
   document.querySelector("#dialogTitle").textContent = `Edit ${activity.asset} order`;
-  document.querySelector("#dialogCopy").textContent = "Correct the activity record. Buy and sell changes will also recalculate the fund holding.";
+  document.querySelector("#dialogCopy").textContent = activity.type === "Dividend"
+    ? "Correct the dividend cash and tax record. It adjusts return without changing units."
+    : "Correct the activity record. Buy and sell changes will also recalculate the fund holding.";
   document.querySelector("#confirmAction").textContent = "Save Changes";
   const deleteButton = document.querySelector("#deleteFund");
   deleteButton.hidden = false;
@@ -1883,6 +1919,14 @@ function openEditActivityDialog(id) {
         switchOutNav: activity.switch.switchOutNav,
         buyingNav: activity.switch.destBuyingNav,
       }
+    : activity.type === "Dividend"
+      ? {
+          date: dateKeyFromActivityDate(activity.date),
+          asset: activity.asset,
+          amount: dividendNetAmount(activity),
+          taxAmount: dividendTaxAmount(activity),
+          grossAmount: dividendGrossAmount(activity),
+        }
     : {
         date: dateKeyFromActivityDate(activity.date),
         asset: activity.asset,
@@ -1902,8 +1946,8 @@ function openEditActivityDialog(id) {
 
 function transactionTypeOptions() {
   return state.action === "Edit Transaction"
-    ? ["Buy", "Sell", "Switch", "Transfer", "Import"]
-    : ["Buy", "Sell", "Switch", "Transfer"];
+    ? ["Buy", "Sell", "Switch", "Dividend", "Transfer", "Import"]
+    : ["Buy", "Sell", "Switch", "Dividend", "Transfer"];
 }
 
 function transactionFundOptions(extra = []) {
@@ -1932,6 +1976,17 @@ function transactionFieldMarkup(type, values = {}) {
     ]) + `<div class="order-preview" id="switchPreview" aria-live="polite"></div>`;
   }
 
+  if (type === "Dividend") {
+    return fieldMarkup([
+      dateField,
+      typeField,
+      { id: "transactionAsset", label: "Fund", kind: "select", options: transactionFundOptions([values.asset]), value: values.asset },
+      { id: "transactionAmount", label: "Net cash received", type: "number", step: "0.01", value: values.amount ?? "", min: "0" },
+      { id: "transactionTaxAmount", label: "Withholding tax", type: "number", step: "0.01", value: values.taxAmount ?? "0", min: "0" },
+      { id: "transactionGrossAmount", label: "Gross dividend", type: "number", step: "0.01", value: values.grossAmount ?? "", min: "0" },
+    ]) + `<div class="order-preview" id="dividendPreview" aria-live="polite"></div>`;
+  }
+
   return fieldMarkup([
     dateField,
     typeField,
@@ -1950,6 +2005,8 @@ function readTransactionFormValues() {
     destAsset: field("transactionDestAsset")?.value,
     units: field("transactionUnits")?.value,
     amount: field("transactionAmount")?.value,
+    taxAmount: field("transactionTaxAmount")?.value,
+    grossAmount: field("transactionGrossAmount")?.value,
     switchOutNav: field("transactionSwitchOutNav")?.value,
     buyingNav: field("transactionBuyingNav")?.value,
     sellAll: field("transactionSellAll")?.checked,
@@ -1979,9 +2036,42 @@ function bindOrderFormHelpers() {
 
   if (typeInput.value === "Switch") {
     bindSwitchHelpers();
+  } else if (typeInput.value === "Dividend") {
+    bindDividendHelpers();
   } else {
     bindBuySellHelpers();
   }
+}
+
+function bindDividendHelpers() {
+  const netInput = document.querySelector("#transactionAmount");
+  const taxInput = document.querySelector("#transactionTaxAmount");
+  const grossInput = document.querySelector("#transactionGrossAmount");
+  const preview = document.querySelector("#dividendPreview");
+  if (!netInput || !taxInput || !grossInput || !preview) return;
+  grossInput.dataset.autoGross = "true";
+
+  const renderPreview = (source) => {
+    const net = Number(netInput.value || 0);
+    const tax = Number(taxInput.value || 0);
+    if (source === grossInput) grossInput.dataset.autoGross = "false";
+    const gross = grossInput.dataset.autoGross === "false"
+      ? Number(grossInput.value || 0) || net + tax
+      : net + tax;
+    if (grossInput.dataset.autoGross !== "false") grossInput.value = gross > 0 ? gross.toFixed(2) : "";
+    preview.innerHTML = net > 0
+      ? `
+        <div class="order-preview-row"><span>Net cash received</span><b>${money(net)}</b></div>
+        <div class="order-preview-row"><span>Withholding tax</span><b>${money(tax)}</b></div>
+        <div class="order-preview-row"><span>Gross dividend</span><b>${money(gross)}</b></div>
+      `
+      : `<span class="order-preview-hint">Enter the net dividend cash you received. Tax and gross are saved for reference.</span>`;
+  };
+
+  netInput.addEventListener("input", () => renderPreview(netInput));
+  taxInput.addEventListener("input", () => renderPreview(taxInput));
+  grossInput.addEventListener("input", () => renderPreview(grossInput));
+  renderPreview();
 }
 
 function bindBuySellHelpers() {
@@ -2116,7 +2206,7 @@ function openActionDialog(action) {
   }[action] || action;
   document.querySelector("#dialogCopy").textContent = {
     "Add Asset": "Add a mutual fund with its own front fee. For a USD fund, set NAV currency to USD and add the buy/current FX rate — value and P&L convert to THB automatically.",
-    "Add Transaction": "Record a buy, sell, switch, or transfer. A switch sells out of one fund (no fee) and buys into another, applying the destination's front fee for you.",
+    "Add Transaction": "Record a buy, sell, switch, dividend, or transfer. Dividends count toward return without changing units.",
     "Import Data": "Paste mutual-fund JSON to merge it into the portfolio.",
   }[action] || "This workflow is ready.";
   fields.className = "dialog-fields";
@@ -2262,6 +2352,9 @@ function handleConfirm(event) {
   } else if (state.action === "Add Transaction" || state.action === "Edit Transaction") {
     const type = getValue("transactionType");
     const amount = Number(getValue("transactionAmount") || 0);
+    const taxAmount = Number(getValue("transactionTaxAmount") || 0);
+    const enteredGrossAmount = Number(getValue("transactionGrossAmount") || 0);
+    const grossAmount = enteredGrossAmount > 0 ? enteredGrossAmount : amount + taxAmount;
     const requestedActivityDate = getValue("transactionDate") || activeDateKey();
     const activityDate = previousWeekdayKey(requestedActivityDate);
 
@@ -2295,6 +2388,15 @@ function handleConfirm(event) {
 
       newSwitchData = buildSwitchData(source, dest, amount, switchOutNav, destBuyingNav);
       asset = fromSymbol;
+    } else if (type === "Dividend") {
+      if (!asset || !holding || amount <= 0) {
+        showToast("Dividend needs a fund and net cash received.");
+        return;
+      }
+      if (taxAmount < 0 || grossAmount < amount) {
+        showToast("Dividend gross amount should be at least the net cash received.");
+        return;
+      }
     } else {
       if (!asset || !holding || amount <= 0) {
         showToast("Order needs a fund and amount.");
@@ -2318,6 +2420,10 @@ function handleConfirm(event) {
     const activityUnitsLabel = () => type === "Switch"
       ? `-${newSwitchData.sourceUnits.toFixed(4)}`
       : unitCount > 0 ? signedUnits(type, unitCount) : "";
+
+    const dividendFields = () => type === "Dividend"
+      ? { grossAmount, taxAmount, netAmount: amount }
+      : {};
 
     if (state.action === "Edit Transaction") {
       const activity = activities.find((item) => item.id === state.editingActivityId);
@@ -2351,15 +2457,24 @@ function handleConfirm(event) {
         asset,
         units: activityUnitsLabel(),
         amount,
+        ...dividendFields(),
       });
       if (type === "Switch") activity.switch = newSwitchData;
       else delete activity.switch;
+      if (type !== "Dividend") {
+        delete activity.grossAmount;
+        delete activity.taxAmount;
+        delete activity.netAmount;
+      }
       state.editingActivityId = "";
       savePortfolio();
       renderAll();
+      const updatedMessage = type === "Dividend"
+        ? `${asset} dividend updated. Return recalculated.`
+        : `${asset} activity updated. Holding recalculated.`;
       showToast(isWeekendDate(requestedActivityDate)
         ? `${asset} activity updated on ${readableDate(activityDate)} because weekend dates are blocked.`
-        : `${asset} activity updated. Holding recalculated.`);
+        : updatedMessage);
     } else {
       if (!applyNew()) {
         showToast(type === "Switch"
@@ -2368,7 +2483,7 @@ function handleConfirm(event) {
         return;
       }
 
-      const newActivity = { id: makeId("activity"), date: readableDate(activityDate), createdAt: new Date().toISOString(), type, asset, units: activityUnitsLabel(), amount };
+      const newActivity = { id: makeId("activity"), date: readableDate(activityDate), createdAt: new Date().toISOString(), type, asset, units: activityUnitsLabel(), amount, ...dividendFields() };
       if (type === "Switch") newActivity.switch = newSwitchData;
       activities.unshift(newActivity);
       savePortfolio();
@@ -2377,6 +2492,10 @@ function handleConfirm(event) {
         showToast(isWeekendDate(requestedActivityDate)
           ? `Switched ${newSwitchData.fromSymbol} → ${newSwitchData.toSymbol} on ${readableDate(activityDate)} because weekend dates are blocked.`
           : `Switched ${newSwitchData.fromSymbol} → ${newSwitchData.toSymbol}. Both holdings updated.`);
+      } else if (type === "Dividend") {
+        showToast(isWeekendDate(requestedActivityDate)
+          ? `Dividend recorded for ${asset} on ${readableDate(activityDate)} because weekend dates are blocked.`
+          : `Dividend recorded for ${asset}. Return updated without changing units.`);
       } else {
         showToast(isWeekendDate(requestedActivityDate)
           ? `${type} order recorded for ${asset} on ${readableDate(activityDate)} because weekend dates are blocked.`
