@@ -949,7 +949,7 @@ function activityDetailLabel(activity) {
   if (activity.type !== "Dividend") return formatActivityUnits(activity.units);
   const tax = dividendTaxAmount(activity);
   const gross = dividendGrossAmount(activity);
-  return tax > 0 ? `Tax ${money(tax)} · Gross ${money(gross)}` : `Dividend received`;
+  return tax > 0 ? `Tax ${money(tax)}` : `Dividend received`;
 }
 
 function parseUnits(value) {
