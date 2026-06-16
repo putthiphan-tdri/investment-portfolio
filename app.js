@@ -802,6 +802,17 @@ function fundFieldMarkup(fund = {}, currencyOverride) {
   return fieldMarkup(fields);
 }
 
+function cashAssetFieldMarkup(cash = {}) {
+  return fieldMarkup([
+    { id: "assetCategory", label: "Category", kind: "select", options: Object.keys(categoryPalette), value: CASH_CATEGORY },
+    { id: "cashName", label: "Cash label", value: cash.name || cash.assetName || "Available Cash" },
+    { id: "cashBank", label: "Bank / channel", value: cash.bank || cash.assetBank || "Cash" },
+    { id: "cashPort", label: "Port", value: cash.port || cash.assetPort || "Uninvested" },
+    { id: "cashBalance", label: "Cash balance", type: "number", step: "0.01", value: cash.cashBalance ?? cash.assetPurchase ?? "", min: "0" },
+    { id: "cashBasis", label: "Cash basis for P&L", type: "number", step: "0.01", value: cash.cashBasis ?? cash.cashBalance ?? cash.assetPurchase ?? "", min: "0" },
+  ]);
+}
+
 function readAssetFormValues() {
   const field = (id) => document.querySelector(`#${id}`);
   return {
@@ -823,12 +834,23 @@ function readAssetFormValues() {
   };
 }
 
-// Re-render the fund form when the NAV currency changes so FX fields appear/disappear,
-// preserving whatever the user has already typed.
+// Re-render the asset form when its type changes so Cash does not ask for fund-only
+// fields, and foreign-currency funds can still show/hide FX fields.
 function bindAssetFormHelpers() {
+  const categoryInput = document.querySelector("#assetCategory");
   const currencyInput = document.querySelector("#assetNavCurrency");
-  if (!currencyInput) return;
-  currencyInput.addEventListener("change", () => {
+
+  categoryInput?.addEventListener("change", () => {
+    const fields = document.querySelector("#dialogFields");
+    if (!fields) return;
+    const values = readAssetFormValues();
+    fields.innerHTML = categoryInput.value === CASH_CATEGORY
+      ? cashAssetFieldMarkup({ ...values, ...readCashFormValues() })
+      : fundFieldMarkup({ ...values, category: categoryInput.value });
+    bindAssetFormHelpers();
+  });
+
+  currencyInput?.addEventListener("change", () => {
     const fields = document.querySelector("#dialogFields");
     if (!fields) return;
     const values = readAssetFormValues();
@@ -2522,7 +2544,7 @@ function openActionDialog(action) {
     "Import Data": "Import JSON",
   }[action] || action;
   document.querySelector("#dialogCopy").textContent = {
-    "Add Asset": "Add a mutual fund with its own front fee. For a USD fund, set NAV currency to USD and add the buy/current FX rate — value and P&L convert to THB automatically.",
+    "Add Asset": "Add a mutual fund, or choose Cash as the category to record available cash without fund-only fields.",
     "Add Transaction": "Record a buy, sell, switch, dividend, deposit, withdrawal, or transfer. New dividends and sell proceeds move into Cash.",
     "Import Data": "Paste mutual-fund JSON to merge it into the portfolio.",
   }[action] || "This workflow is ready.";
@@ -2571,7 +2593,7 @@ function handleConfirm(event) {
   const getValue = (id) => document.querySelector(`#${id}`)?.value.trim() || "";
   const isChecked = (id) => Boolean(document.querySelector(`#${id}`)?.checked);
 
-  if (state.action === "Edit Cash") {
+  if (state.action === "Edit Cash" || (state.action === "Add Asset" && getValue("assetCategory") === CASH_CATEGORY)) {
     const values = readCashFormValues();
     if (values.cashBalance < 0 || values.cashBasis < 0) {
       showToast("Cash balance and basis cannot be negative.");
@@ -2588,7 +2610,7 @@ function handleConfirm(event) {
     Object.assign(cash, normalizeCashHolding(values));
     savePortfolio();
     renderAll();
-    showToast("Cash updated.");
+    showToast(state.action === "Add Asset" ? "Cash added to investments." : "Cash updated.");
   } else if (state.action === "Add Asset" || state.action === "Edit Asset") {
     const symbol = getValue("assetSymbol").toUpperCase();
     const name = getValue("assetName");
