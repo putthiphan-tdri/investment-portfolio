@@ -665,6 +665,8 @@ function normalizePortfolioSnapshots(snapshots) {
     const totalPaid = Number(snapshot.totalPaid ?? snapshot.paid ?? snapshot.investedAmount ?? 0);
     const pnl = Number(snapshot.pnl ?? totalFundValue - totalPaid);
     const pnlPct = Number(snapshot.pnlPct ?? (totalPaid > 0 ? (pnl / totalPaid) * 100 : 0));
+    const dayPnlDelta = Number(snapshot.dayPnlDelta ?? snapshot.dailyPnlDelta ?? snapshot.marketPnlDelta);
+    const dayPnlDeltaPct = Number(snapshot.dayPnlDeltaPct ?? snapshot.dailyPnlDeltaPct ?? snapshot.marketPnlDeltaPct);
 
     byDate.set(date, {
       date,
@@ -672,6 +674,8 @@ function normalizePortfolioSnapshots(snapshots) {
       totalPaid: Number.isFinite(totalPaid) ? totalPaid : 0,
       pnl: Number.isFinite(pnl) ? pnl : 0,
       pnlPct: Number.isFinite(pnlPct) ? pnlPct : 0,
+      ...(Number.isFinite(dayPnlDelta) ? { dayPnlDelta } : {}),
+      ...(Number.isFinite(dayPnlDeltaPct) ? { dayPnlDeltaPct } : {}),
     });
   });
 
@@ -680,12 +684,16 @@ function normalizePortfolioSnapshots(snapshots) {
 
 function currentSnapshot(date = activeDateKey()) {
   const total = totals();
+  const dayPnlDelta = total.fundValue - total.baseFundValue;
+  const dayPnlDeltaPct = total.baseFundValue > 0 ? (dayPnlDelta / total.baseFundValue) * 100 : 0;
   return {
     date,
     totalFundValue: total.fundValue,
     totalPaid: total.paid,
     pnl: total.pnl,
     pnlPct: total.pnlPct,
+    dayPnlDelta,
+    dayPnlDeltaPct,
   };
 }
 
@@ -1722,8 +1730,14 @@ function buildCalendarDays(monthKey, snapshots) {
       if (!snapshot) return { date, day };
 
       const previous = [...snapshots].reverse().find((item) => item.date < date);
-      const delta = previous ? Number(snapshot.pnl || 0) - Number(previous.pnl || 0) : 0;
-      const deltaPct = previous && previous.totalPaid > 0 ? (delta / previous.totalPaid) * 100 : 0;
+      const explicitDelta = Number(snapshot.dayPnlDelta);
+      const explicitDeltaPct = Number(snapshot.dayPnlDeltaPct);
+      const delta = Number.isFinite(explicitDelta)
+        ? explicitDelta
+        : previous ? Number(snapshot.pnl || 0) - Number(previous.pnl || 0) : 0;
+      const deltaPct = Number.isFinite(explicitDeltaPct)
+        ? explicitDeltaPct
+        : previous && previous.totalPaid > 0 ? (delta / previous.totalPaid) * 100 : 0;
       return { date, day, snapshot, delta, deltaPct };
     }),
   ];
