@@ -1847,7 +1847,86 @@ th[data-col].sort-desc::after {
   flex-direction: column;
   grid-column: span 3;
   order: 8;
+  height: 376px;
   min-height: 376px;
+  overflow: hidden;
+}
+
+.bank-summary-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin-top: 18px;
+  padding-right: 4px;
+  overflow: auto;
+}
+
+.bank-pnl-list {
+  display: grid;
+  gap: 10px;
+}
+
+.bank-pnl-row {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+  width: 100%;
+  min-height: 92px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 180ms ease, transform 180ms ease;
+}
+
+.bank-pnl-row:hover {
+  border-color: #b7c4e4;
+}
+
+.bank-pnl-main,
+.bank-pnl-main b,
+.bank-pnl-main small,
+.bank-pnl-values strong,
+.bank-pnl-values small {
+  display: block;
+}
+
+.bank-pnl-main b {
+  color: #26314d;
+  font-size: 13px;
+}
+
+.bank-pnl-main small,
+.bank-pnl-values small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.bank-pnl-values {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+}
+
+.bank-pnl-values strong {
+  min-width: 0;
+  color: #17203a;
+  font-size: 13px;
+}
+
+.bank-port-section {
+  display: grid;
+  min-height: 0;
+  margin-top: 16px;
+}
+
+.bank-port-section h3 {
+  margin: 0;
+  color: #35405c;
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .channel-list,
@@ -1860,6 +1939,16 @@ th[data-col].sort-desc::after {
   margin-top: 18px;
   padding-right: 4px;
   overflow: auto;
+}
+
+.compact-channel-list {
+  margin-top: 10px;
+}
+
+.bank-summary-scroll .channel-list {
+  flex: 0 0 auto;
+  padding-right: 0;
+  overflow: visible;
 }
 
 .archive-section {

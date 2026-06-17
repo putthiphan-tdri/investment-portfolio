@@ -753,6 +753,45 @@ function sortedGroups(map, baseTotal) {
     .sort((a, b) => b.amount - a.amount);
 }
 
+function bankPnlGroups(list) {
+  const groups = list.reduce((acc, item) => {
+    const bank = item.bank || "Unassigned Bank";
+    const existing = acc.get(bank) || {
+      bank,
+      totalValue: 0,
+      fundValue: 0,
+      cashValue: 0,
+      costBasis: 0,
+      pnl: 0,
+      fundCount: 0,
+      cashCount: 0,
+    };
+
+    const value = Number(item.updatedAmount || item.currentValue || 0);
+    existing.totalValue += value;
+
+    if (isCashHolding(item)) {
+      existing.cashValue += value;
+      existing.cashCount += 1;
+    } else {
+      existing.fundValue += value;
+      existing.costBasis += Number(item.purchaseAmount || 0);
+      existing.pnl += Number(item.pnlBaht || 0);
+      existing.fundCount += 1;
+    }
+
+    acc.set(bank, existing);
+    return acc;
+  }, new Map());
+
+  return [...groups.values()]
+    .map((group) => ({
+      ...group,
+      pnlPct: group.costBasis > 0 ? (group.pnl / group.costBasis) * 100 : 0,
+    }))
+    .sort((a, b) => b.totalValue - a.totalValue);
+}
+
 function getSortedHoldings() {
   const list = funds();
   if (!sortState.col) return list;
@@ -1842,32 +1881,62 @@ function renderBreakdown() {
 
 function renderChannelExposure() {
   const total = totals();
-  const groups = sortedGroups(groupBy(total.list, (item) => `${item.bank}||${item.port}`), total.fundValue);
+  const bankGroups = bankPnlGroups(total.list);
+  const portGroups = sortedGroups(groupBy(total.list, (item) => `${item.bank}||${item.port}`), total.fundValue);
 
-  if (groups.length === 0) {
+  if (bankGroups.length === 0) {
     document.querySelector(".events-panel").innerHTML = `
-      <h2>Port Details</h2>
+      <h2>Bank P&L Summary</h2>
       <div class="empty-panel-state">
-        <strong>No port details yet</strong>
-        <span>Active bank and port exposure will appear after you add funds.</span>
+        <strong>No bank summary yet</strong>
+        <span>Bank-level value, cash, and P&L will appear after you add funds.</span>
       </div>
     `;
     return;
   }
 
+  const maxBankPnl = Math.max(...bankGroups.map((group) => Math.abs(group.pnl)), 1);
+
   document.querySelector(".events-panel").innerHTML = `
-    <h2>Port Details</h2>
-    <div class="channel-list">
-      ${groups.map((group) => {
-        const [bank, port] = group.key.split("||");
-        return `
-          <button class="channel-row" data-action="${bank} ${port} selected">
-            <span><b>${bank}</b><small>${port} · ${group.items.length} asset${group.items.length === 1 ? "" : "s"}</small></span>
-            <strong><span class="private-value">${money(group.amount)}</span><small>${group.pct.toFixed(1)}% of assets</small></strong>
-            <span class="channel-track" aria-hidden="true"><i style="width:${Math.max(group.pct, 2).toFixed(1)}%"></i></span>
-          </button>
-        `;
-      }).join("")}
+    <h2>Bank P&L Summary</h2>
+    <div class="bank-summary-scroll">
+      <div class="bank-pnl-list">
+        ${bankGroups.map((group) => {
+          const pnlClass = group.pnl > 0 ? "green" : group.pnl < 0 ? "red" : "neutral";
+          const cashLabel = group.cashValue > 0 ? `Cash ${money(group.cashValue)}` : "No cash";
+          const assetLabel = `${group.fundCount} fund${group.fundCount === 1 ? "" : "s"} · ${cashLabel}`;
+          return `
+            <button class="bank-pnl-row" data-action="${group.bank} bank P&L selected">
+              <span class="bank-pnl-main">
+                <b>${group.bank}</b>
+                <small>${assetLabel}</small>
+              </span>
+              <span class="bank-pnl-values">
+                <strong><span class="private-value">${money(group.totalValue)}</span><small>Total value</small></strong>
+                <strong class="${pnlClass}"><span class="private-value">${money(group.pnl)}</span><small>${pct(group.pnlPct)}</small></strong>
+              </span>
+              <span class="pnl-track" aria-hidden="true">
+                <i class="${group.pnl >= 0 ? "positive" : "negative"}" style="width:${Math.max((Math.abs(group.pnl) / maxBankPnl) * 50, 3.5).toFixed(2)}%"></i>
+              </span>
+            </button>
+          `;
+        }).join("")}
+      </div>
+      <div class="bank-port-section">
+        <h3>Port Exposure</h3>
+        <div class="channel-list compact-channel-list">
+          ${portGroups.map((group) => {
+          const [bank, port] = group.key.split("||");
+          return `
+            <button class="channel-row" data-action="${bank} ${port} selected">
+              <span><b>${bank}</b><small>${port} · ${group.items.length} asset${group.items.length === 1 ? "" : "s"}</small></span>
+              <strong><span class="private-value">${money(group.amount)}</span><small>${group.pct.toFixed(1)}% of assets</small></strong>
+              <span class="channel-track" aria-hidden="true"><i style="width:${Math.max(group.pct, 2).toFixed(1)}%"></i></span>
+            </button>
+          `;
+        }).join("")}
+        </div>
+      </div>
     </div>
   `;
 }
@@ -3016,7 +3085,7 @@ function deleteEditingFund() {
 }
 
 function bindDynamicButtons() {
-  document.querySelectorAll(".calendar-day[data-action], .channel-row, .archive-row, .pnl-row").forEach((button) => {
+  document.querySelectorAll(".calendar-day[data-action], .bank-pnl-row, .channel-row, .archive-row, .pnl-row").forEach((button) => {
     if (button.dataset.bound) return;
     button.dataset.bound = "true";
     button.addEventListener("click", () => showToast(button.dataset.action || button.querySelector("b")?.textContent || ""));
