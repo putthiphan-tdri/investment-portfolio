@@ -1515,6 +1515,29 @@ function snapshotPath(snapshots, valueKey, min, max, startMs, endMs, width, heig
   }).join(" ");
 }
 
+function carryForwardSnapshotsForRange(snapshots, startKey, endKey) {
+  const byDate = new Map(snapshots.map((snapshot) => [snapshot.date, snapshot]));
+  let carried = [...snapshots].reverse().find((snapshot) => snapshot.date < startKey) || null;
+  const filled = [];
+
+  for (let dateKey = startKey; dateKey <= endKey; dateKey = shiftDate(dateKey, 1, "day")) {
+    const snapshot = byDate.get(dateKey);
+    if (snapshot) {
+      carried = snapshot;
+      filled.push(snapshot);
+    } else if (carried) {
+      filled.push({
+        ...carried,
+        date: dateKey,
+        carriedForward: true,
+        sourceDate: carried.sourceDate || carried.date,
+      });
+    }
+  }
+
+  return filled;
+}
+
 function snapshotsForRange(range) {
   const snapshots = snapshotsWithLiveCurrent(portfolioSnapshots);
   if (snapshots.length === 0) return { snapshots: [], startKey: activeDateKey(), endKey: activeDateKey() };
@@ -1527,7 +1550,7 @@ function snapshotsForRange(range) {
   const fallback = [...snapshots].reverse().find((snapshot) => snapshot.date <= endKey) || snapshots[0];
   const usable = visible.length > 0 ? visible : [fallback];
 
-  return { snapshots: usable, startKey, endKey };
+  return { snapshots: usable, sourceSnapshots: snapshots, startKey, endKey };
 }
 
 function renderChart(range = "1W") {
@@ -1572,28 +1595,30 @@ function renderChart(range = "1W") {
     return;
   }
 
-  const { snapshots, startKey, endKey } = snapshotsForRange(range);
+  const { snapshots, sourceSnapshots, startKey, endKey } = snapshotsForRange(range);
   const latestSavedSnapshot = snapshots[snapshots.length - 1];
   const displaySnapshots = latestSavedSnapshot && latestSavedSnapshot.date < endKey
     ? [...snapshots, currentSnapshot(endKey)]
     : snapshots;
+  const filledSnapshots = carryForwardSnapshotsForRange(sourceSnapshots, startKey, endKey);
+  const plottedSnapshots = filledSnapshots.length > 0 ? filledSnapshots : displaySnapshots;
   const startMs = parseDateKey(startKey).getTime();
   let endMs = parseDateKey(endKey).getTime();
   if (endMs <= startMs) endMs = parseDateKey(shiftDate(startKey, 1, "day")).getTime();
 
-  const chartSnapshots = displaySnapshots.length === 1
+  const chartSnapshots = plottedSnapshots.length === 1
     ? [
-      { ...displaySnapshots[0], date: startKey },
-      { ...displaySnapshots[0], date: dateKeyFromDate(new Date(endMs)) },
+      { ...plottedSnapshots[0], date: startKey },
+      { ...plottedSnapshots[0], date: dateKeyFromDate(new Date(endMs)) },
     ]
-    : displaySnapshots;
+    : plottedSnapshots;
 
-  const rangeStart = displaySnapshots[0];
-  const rangeEnd = displaySnapshots[displaySnapshots.length - 1];
+  const rangeStart = plottedSnapshots[0];
+  const rangeEnd = plottedSnapshots[plottedSnapshots.length - 1];
   const rangeDelta = rangeEnd.totalFundValue - rangeStart.totalFundValue;
   const rangePct = rangeStart.totalFundValue > 0 ? (rangeDelta / rangeStart.totalFundValue) * 100 : 0;
-  const high = displaySnapshots.reduce((maxSnapshot, snapshot) => snapshot.totalFundValue > maxSnapshot.totalFundValue ? snapshot : maxSnapshot, displaySnapshots[0]);
-  const low = displaySnapshots.reduce((minSnapshot, snapshot) => snapshot.totalFundValue < minSnapshot.totalFundValue ? snapshot : minSnapshot, displaySnapshots[0]);
+  const high = plottedSnapshots.reduce((maxSnapshot, snapshot) => snapshot.totalFundValue > maxSnapshot.totalFundValue ? snapshot : maxSnapshot, plottedSnapshots[0]);
+  const low = plottedSnapshots.reduce((minSnapshot, snapshot) => snapshot.totalFundValue < minSnapshot.totalFundValue ? snapshot : minSnapshot, plottedSnapshots[0]);
   if (insights) {
     insights.innerHTML = [
       { label: "Range Change", value: rangeChangeMarkup(rangeDelta, rangePct), tone: rangeDelta >= 0 ? "green" : "red" },
@@ -1638,7 +1663,8 @@ function renderChart(range = "1W") {
     const previous = chartSnapshots[index - 1];
     const delta = previous ? snapshot.totalFundValue - previous.totalFundValue : 0;
     const tone = delta > 0 ? "up" : delta < 0 ? "down" : "flat";
-    return `<circle class="chart-point ${tone}" cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="${index === chartSnapshots.length - 1 ? "5.2" : "4.4"}"><title>${readableDate(snapshot.date)} · ${tone === "up" ? "up" : tone === "down" ? "down" : "flat"} ${pct(previous && previous.totalFundValue > 0 ? (delta / previous.totalFundValue) * 100 : 0)}</title></circle>`;
+    const carriedText = snapshot.carriedForward ? ` · carried forward from ${readableDate(snapshot.sourceDate)}` : "";
+    return `<circle class="chart-point ${tone}" cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="${index === chartSnapshots.length - 1 ? "5.2" : "4.4"}"><title>${readableDate(snapshot.date)} · ${tone === "up" ? "up" : tone === "down" ? "down" : "flat"} ${pct(previous && previous.totalFundValue > 0 ? (delta / previous.totalFundValue) * 100 : 0)}${carriedText}</title></circle>`;
   }).join("");
 
   svg.innerHTML = `
