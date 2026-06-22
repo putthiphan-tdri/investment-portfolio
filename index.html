@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="./styles.css?v=20260619a" />
+    <link rel="stylesheet" href="./styles.css?v=20260621a" />
   </head>
   <body>
     <div class="app-shell">
@@ -114,7 +114,15 @@
           </article>
 
           <article class="panel allocation-panel reveal">
-            <h2>Category Allocation</h2>
+            <div class="panel-heading allocation-heading">
+              <h2>Category Allocation</h2>
+              <label class="filter-select compact-filter">
+                <span>Bank</span>
+                <select id="allocationBankFilter" aria-label="Filter category allocation by bank">
+                  <option value="">All banks</option>
+                </select>
+              </label>
+            </div>
             <div class="allocation-layout">
               <div class="donut" aria-label="Asset allocation chart">
                 <div class="donut-center">
@@ -133,6 +141,26 @@
           <article class="panel holdings-panel reveal">
             <div class="panel-heading table-head">
               <h2>Investments &amp; Cash</h2>
+              <span class="holding-filter-count" id="holdingFilterCount">0 assets</span>
+            </div>
+            <div class="holding-filter-bar" aria-label="Filter investments and cash">
+              <label class="filter-search">
+                <span>Search</span>
+                <input id="holdingSearchInput" type="search" placeholder="Fund, bank, port, category" autocomplete="off" />
+              </label>
+              <label class="filter-select">
+                <span>Bank</span>
+                <select id="holdingBankFilter" aria-label="Filter table by bank">
+                  <option value="">All banks</option>
+                </select>
+              </label>
+              <label class="filter-select">
+                <span>Category</span>
+                <select id="holdingCategoryFilter" aria-label="Filter table by category">
+                  <option value="">All categories</option>
+                </select>
+              </label>
+              <button class="filter-reset" id="holdingFilterReset" type="button">Reset</button>
             </div>
             <div class="table-wrap">
               <table>
@@ -201,6 +229,6 @@
     </dialog>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="./app.js?v=20260619a"></script>
+    <script src="./app.js?v=20260621a"></script>
   </body>
 </html>

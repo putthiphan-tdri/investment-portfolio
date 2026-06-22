@@ -27,6 +27,10 @@ const state = {
   editingActivityId: "",
   logDate: "",
   calendarMonth: "",
+  tableSearch: "",
+  tableBank: "",
+  tableCategory: "",
+  allocationBank: "",
   privacyMode: false,
 };
 
@@ -354,6 +358,16 @@ function pct(value) {
   return `${value >= 0 ? "▲ " : "▼ "}${Math.abs(value).toFixed(2)}%`;
 }
 
+function htmlAttr(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    "\"": "&quot;",
+    "'": "&#39;",
+  }[char]));
+}
+
 function bracketPct(value) {
   if (Math.abs(value) < 0.005) return "(0.00%)";
   return `(${value >= 0 ? "+" : "-"}${Math.abs(value).toFixed(2)}%)`;
@@ -632,8 +646,7 @@ function funds() {
   }));
 }
 
-function totals() {
-  const list = funds();
+function totalsForList(list) {
   const fundValue = list.reduce((sum, item) => sum + item.updatedAmount, 0);
   const baseFundValue = list.reduce((sum, item) => sum + item.baseValue, 0);
   const invested = list.reduce((sum, item) => sum + item.capitalInvested, 0);
@@ -651,6 +664,10 @@ function totals() {
     pnl,
     pnlPct,
   };
+}
+
+function totals() {
+  return totalsForList(funds());
 }
 
 function normalizePortfolioSnapshots(snapshots) {
@@ -753,6 +770,33 @@ function sortedGroups(map, baseTotal) {
     .sort((a, b) => b.amount - a.amount);
 }
 
+function uniqueSorted(values) {
+  return [...new Set(values.filter(Boolean))].sort((a, b) => a.localeCompare(b));
+}
+
+function optionMarkup(options, selectedValue, allLabel) {
+  return [
+    `<option value="">${allLabel}</option>`,
+    ...options.map((option) => `<option value="${htmlAttr(option)}"${option === selectedValue ? " selected" : ""}>${htmlAttr(option)}</option>`),
+  ].join("");
+}
+
+function filterableText(item) {
+  return [item.symbol, item.name, item.bank, item.port, item.category]
+    .join(" ")
+    .toLowerCase();
+}
+
+function filteredHoldingsList(list) {
+  const query = state.tableSearch.trim().toLowerCase();
+  return list.filter((item) => {
+    if (state.tableBank && item.bank !== state.tableBank) return false;
+    if (state.tableCategory && item.category !== state.tableCategory) return false;
+    if (query && !filterableText(item).includes(query)) return false;
+    return true;
+  });
+}
+
 function bankPnlGroups(list) {
   const groups = list.reduce((acc, item) => {
     const bank = item.bank || "Unassigned Bank";
@@ -793,7 +837,7 @@ function bankPnlGroups(list) {
 }
 
 function getSortedHoldings() {
-  const list = funds();
+  const list = filteredHoldingsList(funds());
   if (!sortState.col) return list;
 
   return [...list].sort((a, b) => {
@@ -974,18 +1018,46 @@ function renderHero() {
   }
 }
 
+function renderHoldingFilters(allList, visibleList) {
+  const bankOptions = uniqueSorted(allList.map((item) => item.bank));
+  const categoryOptions = uniqueSorted(allList.map((item) => item.category));
+  if (state.tableBank && !bankOptions.includes(state.tableBank)) state.tableBank = "";
+  if (state.tableCategory && !categoryOptions.includes(state.tableCategory)) state.tableCategory = "";
+
+  const searchInput = document.querySelector("#holdingSearchInput");
+  const bankSelect = document.querySelector("#holdingBankFilter");
+  const categorySelect = document.querySelector("#holdingCategoryFilter");
+  const countNode = document.querySelector("#holdingFilterCount");
+  const resetButton = document.querySelector("#holdingFilterReset");
+
+  if (searchInput && document.activeElement !== searchInput) searchInput.value = state.tableSearch;
+  if (bankSelect) bankSelect.innerHTML = optionMarkup(bankOptions, state.tableBank, "All banks");
+  if (categorySelect) categorySelect.innerHTML = optionMarkup(categoryOptions, state.tableCategory, "All categories");
+  if (countNode) {
+    const shown = visibleList.length;
+    const total = allList.length;
+    countNode.textContent = shown === total
+      ? `${total} asset${total === 1 ? "" : "s"}`
+      : `${shown} of ${total} asset${total === 1 ? "" : "s"}`;
+  }
+  if (resetButton) resetButton.disabled = !state.tableSearch && !state.tableBank && !state.tableCategory;
+}
+
 function renderHoldings() {
   const body = document.querySelector("#holdingsBody");
+  const allHoldings = funds();
   const sorted = getSortedHoldings();
-  const total = totals();
+  const total = totalsForList(sorted);
+  renderHoldingFilters(allHoldings, sorted);
 
   if (sorted.length === 0) {
+    const hasAssets = allHoldings.length > 0;
     body.innerHTML = `
       <tr class="empty-table-row">
         <td colspan="12">
           <div class="empty-table-state">
-            <strong>No investments or cash yet</strong>
-            <span>Add a fund, deposit cash, or import JSON to start tracking portfolio value.</span>
+            <strong>${hasAssets ? "No assets match these filters" : "No investments or cash yet"}</strong>
+            <span>${hasAssets ? "Adjust the search, bank, or category filter to show more rows." : "Add a fund, deposit cash, or import JSON to start tracking portfolio value."}</span>
           </div>
         </td>
       </tr>
@@ -1692,7 +1764,16 @@ function renderChart(range = "1W") {
 
 function renderAllocation() {
   const total = totals();
-  const groups = sortedGroups(groupBy(total.list, (item) => item.category), total.fundValue);
+  const bankOptions = uniqueSorted(total.list.map((item) => item.bank));
+  if (state.allocationBank && !bankOptions.includes(state.allocationBank)) state.allocationBank = "";
+  const allocationSelect = document.querySelector("#allocationBankFilter");
+  if (allocationSelect) allocationSelect.innerHTML = optionMarkup(bankOptions, state.allocationBank, "All banks");
+
+  const allocationList = state.allocationBank
+    ? total.list.filter((item) => item.bank === state.allocationBank)
+    : total.list;
+  const allocationTotal = totalsForList(allocationList);
+  const groups = sortedGroups(groupBy(allocationList, (item) => item.category), allocationTotal.fundValue);
   const donut = document.querySelector(".donut");
 
   if (groups.length === 0) {
@@ -1702,7 +1783,7 @@ function renderAllocation() {
     document.querySelector(".allocation-list").innerHTML = `
       <div class="empty-panel-state compact">
         <strong>No allocation yet</strong>
-        <span>Fund categories will appear after you add holdings.</span>
+        <span>${state.allocationBank ? "This bank has no active assets." : "Fund categories will appear after you add holdings."}</span>
       </div>
     `;
     return;
@@ -1721,7 +1802,7 @@ function renderAllocation() {
 
   donut.style.background = `radial-gradient(circle at center, var(--surface) 0 42%, transparent 43%), conic-gradient(${stops.join(", ")})`;
   donut.__allocationGroups = groups;
-  document.querySelector(".donut-center strong").innerHTML = `<span class="private-value">${shortMoney(total.fundValue)}</span>`;
+  document.querySelector(".donut-center strong").innerHTML = `<span class="private-value">${shortMoney(allocationTotal.fundValue)}</span>`;
   document.querySelector(".allocation-list").innerHTML = groups.map((group) => `
     <div>
       <i style="background:${colorForCategory(group.key)}"></i>
@@ -3161,6 +3242,36 @@ function bindInteractions() {
   document.querySelector("#refreshButton").addEventListener("click", () => openActionDialog("Update Prices"));
 
   document.querySelector("#cloudSyncButton")?.addEventListener("click", openCloudSyncDialog);
+
+  document.querySelector("#holdingSearchInput")?.addEventListener("input", (event) => {
+    state.tableSearch = event.target.value;
+    renderHoldings();
+  });
+
+  document.querySelector("#holdingBankFilter")?.addEventListener("change", (event) => {
+    state.tableBank = event.target.value;
+    renderHoldings();
+  });
+
+  document.querySelector("#holdingCategoryFilter")?.addEventListener("change", (event) => {
+    state.tableCategory = event.target.value;
+    renderHoldings();
+  });
+
+  document.querySelector("#holdingFilterReset")?.addEventListener("click", () => {
+    state.tableSearch = "";
+    state.tableBank = "";
+    state.tableCategory = "";
+    renderHoldings();
+    showToast("Table filters reset.");
+  });
+
+  document.querySelector("#allocationBankFilter")?.addEventListener("change", (event) => {
+    state.allocationBank = event.target.value;
+    renderAllocation();
+    bindAllocationTooltip();
+    showToast(state.allocationBank ? `Category allocation filtered to ${state.allocationBank}.` : "Category allocation showing all banks.");
+  });
 
   const logDateInput = document.querySelector("#logDateInput");
   if (logDateInput) {
