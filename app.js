@@ -1550,8 +1550,24 @@ function rangeStartKey(range, endKey) {
 
 function formatChartDate(dateKey, range) {
   const date = parseDateKey(dateKey);
-  if (range === "ALL") return date.toLocaleDateString("en-US", { month: "short", year: "2-digit" });
+  if (range === "ALL") return date.toLocaleDateString("en-US", { month: "short", year: "numeric" });
   return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+function allRangeTickMarks(startMs, endMs, count = 6) {
+  const startKey = dateKeyFromDate(new Date(startMs));
+  const endKey = dateKeyFromDate(new Date(endMs));
+  const marks = [{ ms: parseDateKey(startKey).getTime(), label: formatChartDate(startKey, "ALL") }];
+  const cursor = parseDateKey(`${startKey.slice(0, 7)}-01`);
+  cursor.setMonth(cursor.getMonth() + 1);
+
+  for (let key = dateKeyFromDate(cursor); key <= endKey; key = shiftDate(key, 1, "month")) {
+    marks.push({ ms: parseDateKey(key).getTime(), label: formatChartDate(key, "ALL") });
+  }
+
+  if (marks.length <= count) return marks;
+  const stride = Math.ceil(marks.length / count);
+  return marks.filter((_, index) => index === 0 || index === marks.length - 1 || index % stride === 0);
 }
 
 // X-axis ticks. The 1W view labels the selected seven-day window, even when
@@ -1560,7 +1576,9 @@ function formatChartDate(dateKey, range) {
 function chartTickMarks(chartSnapshots, startMs, endMs, range, count = 5) {
   const span = Math.max(endMs - startMs, 1);
   const dayMs = 24 * 60 * 60 * 1000;
-  const marks = range === "1W"
+  const marks = range === "ALL"
+    ? allRangeTickMarks(startMs, endMs)
+    : range === "1W"
     ? Array.from({ length: Math.floor(span / dayMs) + 1 }, (_, index) => {
       const key = dateKeyFromDate(new Date(startMs + index * dayMs));
       return { ms: parseDateKey(key).getTime(), label: formatChartDate(key, range) };
