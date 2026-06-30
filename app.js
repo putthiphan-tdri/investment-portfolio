@@ -180,6 +180,8 @@ function applyStoredPayload(parsed) {
   portfolioSnapshots.splice(0, portfolioSnapshots.length, ...normalizePortfolioSnapshots(parsed.portfolioSnapshots || parsed.snapshots || []));
   if (parsed.currency && currencyConfig[parsed.currency]) state.currency = parsed.currency;
   if ("privacyMode" in parsed) state.privacyMode = Boolean(parsed.privacyMode);
+  repairBGlobalTreasurySwitch();
+  dedupePortfolioRecords();
 }
 
 function loadPortfolio() {
@@ -190,6 +192,100 @@ function loadPortfolio() {
   } catch {
     console.warn("Saved portfolio data could not be loaded.");
   }
+}
+
+function nearlyEqual(left, right, tolerance = 0.05) {
+  return Math.abs(Number(left || 0) - Number(right || 0)) <= tolerance;
+}
+
+function repairBGlobalTreasurySwitch() {
+  const isMistakenBGlobalBuy = (activity) => (
+    activity.date === "Jun 30, 2026"
+    && activity.type === "Buy"
+    && activity.asset === "B-GLOBAL"
+    && nearlyEqual(activity.amount, 543417.97)
+    && !activity.switch
+  );
+  const mistakenBuys = activities.filter(isMistakenBGlobalBuy);
+  const repairedSwitch = activities.find((activity) => (
+    activity.type === "Switch"
+    && activity.switch?.fromSymbol === "B-TREASURY"
+    && activity.switch?.toSymbol === "B-GLOBAL"
+    && nearlyEqual(activity.amount, 543417.97)
+  ));
+
+  if (mistakenBuys.length === 0 && !repairedSwitch) return false;
+
+  const source = holdings.find((holding) => holding.symbol === "B-TREASURY");
+  const dest = holdings.find((holding) => holding.symbol === "B-GLOBAL");
+  const jun30 = portfolioSnapshots.find((snapshot) => snapshot.date === "2026-06-30");
+  const jul1 = portfolioSnapshots.find((snapshot) => snapshot.date === "2026-07-01");
+  const switchActivity = repairedSwitch || mistakenBuys[0];
+  const amount = Number(switchActivity.amount || 0);
+  const sourceCostRemoved = jun30 && jul1 && jun30.totalPaid > jul1.totalPaid
+    ? jun30.totalPaid - jul1.totalPaid
+    : 516192.066;
+  const sourceCostPerUnit = Number(source?.purchaseAmount || 0) / Math.max(Number(source?.units || 0), 1);
+  const sourceUnits = sourceCostPerUnit > 0 ? sourceCostRemoved / sourceCostPerUnit : 0;
+  const switchOutNav = sourceUnits > 0 ? amount / sourceUnits : Number(source?.currentNav || 0);
+  const destUnits = Number(dest?.units || parseUnits(switchActivity.units));
+  const destBuyingNav = Number(dest?.buyingNav || (destUnits > 0 ? amount / destUnits : 0));
+  const destFeeRate = 0;
+  const destOfferNav = destBuyingNav * (1 + destFeeRate / 100);
+
+  Object.assign(switchActivity, {
+    type: "Switch",
+    asset: "B-TREASURY",
+    units: sourceUnits > 0 ? `-${sourceUnits.toFixed(4)}` : switchActivity.units,
+    switch: {
+      fromSymbol: "B-TREASURY",
+      toSymbol: "B-GLOBAL",
+      amount,
+      switchOutNav,
+      sourceUnits,
+      destBuyingNav,
+      destFeeRate,
+      destOfferNav,
+      destUnits,
+      sourceCostRemoved,
+      sourceEmptied: false,
+      destCapitalAdded: destUnits * destBuyingNav,
+    },
+  });
+  delete switchActivity.depositedToCash;
+  delete switchActivity.fromCash;
+  delete switchActivity.cashAmount;
+  delete switchActivity.cashBasisAmount;
+
+  const isMistakenBTreasurySell = (activity) => (
+    activity !== switchActivity
+    && activity.date === "Jun 30, 2026"
+    && activity.type === "Sell"
+    && activity.asset === "B-TREASURY"
+    && nearlyEqual(activity.amount, sourceCostRemoved, 1)
+    && activity.depositedToCash
+  );
+  const dedupedActivities = activities.filter((activity) => (
+    activity === switchActivity
+    || (!isMistakenBGlobalBuy(activity) && !isMistakenBTreasurySell(activity))
+  ));
+  activities.splice(0, activities.length, ...dedupedActivities);
+
+  if (jun30 && jul1 && jun30.totalPaid > jul1.totalPaid + 100000) {
+    const correctedFundValue = Number.isFinite(Number(jul1.dayPnlDelta))
+      ? jul1.totalFundValue - jul1.dayPnlDelta
+      : jun30.totalFundValue - sourceCostRemoved;
+    jun30.totalFundValue = correctedFundValue;
+    jun30.totalPaid = jul1.totalPaid;
+    jun30.pnl = jun30.totalFundValue - jun30.totalPaid;
+    jun30.pnlPct = jun30.totalPaid > 0 ? (jun30.pnl / jun30.totalPaid) * 100 : 0;
+    if (Number.isFinite(Number(jun30.dayPnlDelta))) {
+      const priorValue = Math.max(jun30.totalFundValue - jun30.dayPnlDelta, 0);
+      jun30.dayPnlDeltaPct = priorValue > 0 ? (jun30.dayPnlDelta / priorValue) * 100 : 0;
+    }
+  }
+
+  return true;
 }
 
 function todayLabel() {
@@ -301,6 +397,56 @@ function normalizeActivities(items) {
     fromCash: Boolean(item.fromCash || item.useCash),
     ...(item.switch ? { switch: item.switch } : {}),
   }));
+}
+
+function normalizedActivityKey(activity) {
+  const amountKey = Number(activity.amount || 0).toFixed(2);
+  const grossKey = Number(activity.grossAmount || 0).toFixed(2);
+  const taxKey = Number(activity.taxAmount || 0).toFixed(2);
+  const netKey = Number(activity.netAmount || 0).toFixed(2);
+  const cashKey = Number(activity.cashAmount || 0).toFixed(2);
+  const cashBasisKey = Number(activity.cashBasisAmount || 0).toFixed(2);
+  const switchKey = activity.switch
+    ? [
+        activity.switch.fromSymbol || "",
+        activity.switch.toSymbol || "",
+        Number(activity.switch.amount || 0).toFixed(2),
+        Number(activity.switch.sourceUnits || 0).toFixed(4),
+        Number(activity.switch.destUnits || 0).toFixed(4),
+      ].join("|")
+    : "";
+
+  return [
+    dateKeyFromActivityDate(activity.date),
+    activity.createdAt || "",
+    activity.type || "",
+    activity.asset || "",
+    String(activity.units || "").replace(/^\+/, "").trim(),
+    amountKey,
+    grossKey,
+    taxKey,
+    netKey,
+    cashKey,
+    cashBasisKey,
+    Boolean(activity.depositedToCash),
+    Boolean(activity.fromCash),
+    switchKey,
+  ].join("::");
+}
+
+function dedupeActivities(list) {
+  const seen = new Set();
+  return list.filter((activity) => {
+    const key = normalizedActivityKey(activity);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function dedupePortfolioRecords() {
+  activities.splice(0, activities.length, ...dedupeActivities(activities));
+  portfolioSnapshots.splice(0, portfolioSnapshots.length, ...normalizePortfolioSnapshots(portfolioSnapshots));
 }
 
 function activitySortValue(activity) {
@@ -2255,6 +2401,7 @@ function importSampleData() {
     }
   });
   portfolioSnapshots.sort((a, b) => a.date.localeCompare(b.date));
+  dedupePortfolioRecords();
 
   savePortfolio({ captureSnapshot: false });
   renderAll();
