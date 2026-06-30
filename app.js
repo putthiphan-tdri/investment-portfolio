@@ -2007,7 +2007,6 @@ function renderBreakdown() {
 function renderChannelExposure() {
   const total = totals();
   const bankGroups = bankPnlGroups(total.list);
-  const portGroups = sortedGroups(groupBy(total.list, (item) => `${item.bank}||${item.port}`), total.fundValue);
 
   if (bankGroups.length === 0) {
     document.querySelector(".events-panel").innerHTML = `
@@ -2020,8 +2019,6 @@ function renderChannelExposure() {
     return;
   }
 
-  const maxBankPnl = Math.max(...bankGroups.map((group) => Math.abs(group.pnl)), 1);
-
   document.querySelector(".events-panel").innerHTML = `
     <h2>Bank P&L Summary</h2>
     <div class="bank-summary-scroll">
@@ -2030,6 +2027,7 @@ function renderChannelExposure() {
           const pnlClass = group.pnl > 0 ? "green" : group.pnl < 0 ? "red" : "neutral";
           const cashLabel = group.cashValue > 0 ? `Cash ${money(group.cashValue)}` : "No cash";
           const assetLabel = `${group.fundCount} fund${group.fundCount === 1 ? "" : "s"} · ${cashLabel}`;
+          const exposurePct = total.fundValue > 0 ? (group.totalValue / total.fundValue) * 100 : 0;
           return `
             <button class="bank-pnl-row" data-action="${group.bank} bank P&L selected">
               <span class="bank-pnl-main">
@@ -2040,27 +2038,15 @@ function renderChannelExposure() {
                 <strong><span class="private-value">${money(group.totalValue)}</span><small>Total value</small></strong>
                 <strong class="${pnlClass}"><span class="private-value">${money(group.pnl)}</span><small>${pct(group.pnlPct)}</small></strong>
               </span>
-              <span class="pnl-track" aria-hidden="true">
-                <i class="${group.pnl >= 0 ? "positive" : "negative"}" style="width:${Math.max((Math.abs(group.pnl) / maxBankPnl) * 50, 3.5).toFixed(2)}%"></i>
+              <span class="bank-exposure-meter">
+                <span class="bank-exposure-track" aria-hidden="true">
+                  <i style="width:${Math.max(exposurePct, 2).toFixed(1)}%"></i>
+                </span>
+                <small>${exposurePct.toFixed(1)}% of assets</small>
               </span>
             </button>
           `;
         }).join("")}
-      </div>
-      <div class="bank-port-section">
-        <h3>Port Exposure</h3>
-        <div class="channel-list compact-channel-list">
-          ${portGroups.map((group) => {
-          const [bank, port] = group.key.split("||");
-          return `
-            <button class="channel-row" data-action="${bank} ${port} selected">
-              <span><b>${bank}</b><small>${port} · ${group.items.length} asset${group.items.length === 1 ? "" : "s"}</small></span>
-              <strong><span class="private-value">${money(group.amount)}</span><small>${group.pct.toFixed(1)}% of assets</small></strong>
-              <span class="channel-track" aria-hidden="true"><i style="width:${Math.max(group.pct, 2).toFixed(1)}%"></i></span>
-            </button>
-          `;
-        }).join("")}
-        </div>
       </div>
     </div>
   `;
