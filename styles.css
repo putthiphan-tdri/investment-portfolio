@@ -916,7 +916,9 @@ button:active {
 .summary-panel {
   grid-column: span 6;
   order: 3;
-  height: 520px;
+  display: flex;
+  flex-direction: column;
+  min-height: 520px;
 }
 
 .calendar-heading {
@@ -1999,6 +2001,32 @@ th[data-col].sort-desc::after {
   min-width: 0;
   color: #17203a;
   font-size: 13px;
+}
+
+.bank-exposure-meter {
+  display: grid;
+  gap: 6px;
+}
+
+.bank-exposure-meter small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.bank-exposure-track {
+  display: block;
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e7ecf6;
+}
+
+.bank-exposure-track i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #43a65f, var(--green));
 }
 
 .bank-port-section {
