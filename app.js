@@ -1309,7 +1309,7 @@ function renderHoldings() {
     <tr data-symbol="${htmlAttr(item.symbol)}" class="cash-row">
       <td data-label="Fund">
         <div class="asset-cell">
-          <span class="asset-name"><strong>${CASH_SYMBOL} <span class="ccy-chip cash-chip" title="Available cash">Cash</span></strong><span>${item.name}</span></span>
+          <span class="asset-name"><strong>${CASH_SYMBOL}</strong><span>${item.name}</span></span>
         </div>
       </td>
       <td data-label="Bank / Port"><strong>${item.bank}</strong><span class="cell-note">${item.port}</span></td>
@@ -2219,7 +2219,8 @@ function renderValueCalendar() {
 
 function renderBreakdown() {
   const total = totals();
-  if (total.list.length === 0) {
+  const contributionList = total.list.filter((item) => !isCashHolding(item));
+  if (contributionList.length === 0) {
     document.querySelector(".pnl-list").innerHTML = `
       <div class="empty-panel-state">
         <strong>No P&L contribution yet</strong>
@@ -2229,8 +2230,8 @@ function renderBreakdown() {
     return;
   }
 
-  const maxContribution = Math.max(...total.list.map((item) => Math.abs(item.pnlBaht)), 1);
-  const sorted = [...total.list].sort((a, b) => Math.abs(b.pnlBaht) - Math.abs(a.pnlBaht));
+  const maxContribution = Math.max(...contributionList.map((item) => Math.abs(item.pnlBaht)), 1);
+  const sorted = [...contributionList].sort((a, b) => Math.abs(b.pnlBaht) - Math.abs(a.pnlBaht));
 
   document.querySelector(".pnl-list").innerHTML = sorted.map((item) => `
     <button class="pnl-row" data-action="${item.symbol} P&L contribution selected">
