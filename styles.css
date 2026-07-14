@@ -1483,11 +1483,19 @@ tbody tr:hover {
 }
 
 tbody tr.cash-row {
-  background: #fffaf2;
+  background: #fff8e8;
+}
+
+tbody tr.cash-row td {
+  background: #fff8e8;
 }
 
 tbody tr.cash-row:hover {
-  background: #fff5e8;
+  background: #fff2d9;
+}
+
+tbody tr.cash-row:hover td {
+  background: #fff2d9;
 }
 
 tbody tr:last-child td {
@@ -2926,6 +2934,16 @@ th[data-col].sort-desc::after {
   .table-wrap tbody tr[data-symbol]:hover {
     background: var(--surface);
     border-color: #b7c4e4;
+  }
+
+  .table-wrap tbody tr.cash-row[data-symbol],
+  .table-wrap tbody tr.cash-row[data-symbol]:hover {
+    background: #fff8e8;
+  }
+
+  .table-wrap tbody tr.cash-row[data-symbol] td,
+  .table-wrap tbody tr.cash-row[data-symbol]:hover td {
+    background: #fff8e8;
   }
 
   .table-wrap tbody tr[data-symbol] td {
