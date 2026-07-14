@@ -39,7 +39,7 @@ const currencyConfig = {
   USD: { symbol: "$", rate: 0.027 },
 };
 
-const sortState = { col: null, dir: "asc" };
+const sortState = { col: "bank", dir: "asc" };
 const storageKey = "myFundsPortfolio.v1";
 
 function savePortfolio({ captureSnapshot = true } = {}) {
@@ -993,6 +993,14 @@ function uniqueSorted(values) {
   return [...new Set(values.filter(Boolean))].sort((a, b) => a.localeCompare(b));
 }
 
+function compareText(left, right) {
+  return String(left || "").localeCompare(String(right || ""), undefined, { sensitivity: "base", numeric: true });
+}
+
+function holdingFundSortLabel(item = {}) {
+  return isCashHolding(item) ? CASH_SYMBOL : String(item.symbol || item.name || "");
+}
+
 function optionMarkup(options, selectedValue, allLabel) {
   return [
     `<option value="">${allLabel}</option>`,
@@ -1060,9 +1068,24 @@ function getSortedHoldings() {
   if (!sortState.col) return list;
 
   return [...list].sort((a, b) => {
-    const av = a[sortState.col];
-    const bv = b[sortState.col];
-    const cmp = typeof av === "string" ? av.localeCompare(bv) : Number(av) - Number(bv);
+    let cmp = 0;
+    if (sortState.col === "bank") {
+      cmp = compareText(a.bank, b.bank)
+        || compareText(a.port, b.port)
+        || compareText(holdingFundSortLabel(a), holdingFundSortLabel(b))
+        || compareText(a.name, b.name);
+    } else if (sortState.col === "symbol") {
+      cmp = compareText(holdingFundSortLabel(a), holdingFundSortLabel(b))
+        || compareText(a.name, b.name)
+        || compareText(a.bank, b.bank)
+        || compareText(a.port, b.port);
+    } else {
+      const av = a[sortState.col];
+      const bv = b[sortState.col];
+      cmp = typeof av === "string" || typeof bv === "string"
+        ? compareText(av, bv)
+        : Number(av || 0) - Number(bv || 0);
+    }
     return sortState.dir === "asc" ? cmp : -cmp;
   });
 }
