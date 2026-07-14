@@ -393,6 +393,8 @@ function normalizeActivities(items) {
     netAmount: Number(item.netAmount ?? item.netDividend ?? item.amount ?? 0),
     cashAmount: Number(item.cashAmount ?? 0),
     cashBasisAmount: Number(item.cashBasisAmount ?? item.holdingCostBasisAmount ?? 0),
+    cashBank: item.cashBank ? String(item.cashBank) : "",
+    cashPort: item.cashPort ? String(item.cashPort) : "",
     depositedToCash: Boolean(item.depositedToCash || item.toCash),
     fromCash: Boolean(item.fromCash || item.useCash),
     ...(item.switch ? { switch: item.switch } : {}),
@@ -406,6 +408,8 @@ function normalizedActivityKey(activity) {
   const netKey = Number(activity.netAmount || 0).toFixed(2);
   const cashKey = Number(activity.cashAmount || 0).toFixed(2);
   const cashBasisKey = Number(activity.cashBasisAmount || 0).toFixed(2);
+  const cashBankKey = String(activity.cashBank || "");
+  const cashPortKey = String(activity.cashPort || "");
   const switchKey = activity.switch
     ? [
         activity.switch.fromSymbol || "",
@@ -428,6 +432,8 @@ function normalizedActivityKey(activity) {
     netKey,
     cashKey,
     cashBasisKey,
+    cashBankKey,
+    cashPortKey,
     Boolean(activity.depositedToCash),
     Boolean(activity.fromCash),
     switchKey,
@@ -444,7 +450,33 @@ function dedupeActivities(list) {
   });
 }
 
+function dedupeCashHoldings(list) {
+  const seenCash = new Map();
+  const result = [];
+
+  list.forEach((item) => {
+    if (!isCashHolding(item)) {
+      result.push(item);
+      return;
+    }
+
+    const cash = normalizeCashHolding(item);
+    const key = cashIdentityKey(cash);
+    const existingIndex = seenCash.get(key);
+    if (existingIndex === undefined) {
+      seenCash.set(key, result.length);
+      result.push(cash);
+      return;
+    }
+
+    result[existingIndex] = { ...result[existingIndex], ...cash };
+  });
+
+  return result;
+}
+
 function dedupePortfolioRecords() {
+  holdings.splice(0, holdings.length, ...dedupeCashHoldings(holdings));
   activities.splice(0, activities.length, ...dedupeActivities(activities));
   portfolioSnapshots.splice(0, portfolioSnapshots.length, ...normalizePortfolioSnapshots(portfolioSnapshots));
 }
@@ -539,18 +571,40 @@ function colorForCategory(category) {
 }
 
 function isCashHolding(item = {}) {
-  return Boolean(item.isCash) || item.symbol === CASH_SYMBOL || item.category === CASH_CATEGORY;
+  return Boolean(item.isCash) || item.symbol === CASH_SYMBOL || String(item.symbol || "").startsWith(`${CASH_SYMBOL}::`) || item.category === CASH_CATEGORY;
+}
+
+function cashIdentity({ bank, port } = {}) {
+  return {
+    bank: String(bank || "Cash").trim() || "Cash",
+    port: String(port || "Uninvested").trim() || "Uninvested",
+  };
+}
+
+function cashSymbolFor({ bank, port } = {}) {
+  const identity = cashIdentity({ bank, port });
+  return `${CASH_SYMBOL}::${encodeURIComponent(identity.bank)}::${encodeURIComponent(identity.port)}`;
+}
+
+function cashIdentityKey(item = {}) {
+  const identity = cashIdentity(item);
+  return `${identity.bank.toLowerCase()}::${identity.port.toLowerCase()}`;
+}
+
+function sameCashHolding(left = {}, right = {}) {
+  return isCashHolding(left) && isCashHolding(right) && cashIdentityKey(left) === cashIdentityKey(right);
 }
 
 function normalizeCashHolding(item = {}) {
   const balance = Number(item.cashBalance ?? item.currentValue ?? item.updatedAmount ?? item.purchaseAmount ?? 0);
   const safeBalance = Number.isFinite(balance) ? Math.max(balance, 0) : 0;
+  const identity = cashIdentity(item);
   return {
     ...item,
-    symbol: CASH_SYMBOL,
+    symbol: cashSymbolFor(identity),
     name: item.name || "Available Cash",
-    bank: item.bank || "Cash",
-    port: item.port || "Uninvested",
+    bank: identity.bank,
+    port: identity.port,
     category: CASH_CATEGORY,
     isCash: true,
     navCurrency: "THB",
@@ -568,26 +622,31 @@ function normalizeCashHolding(item = {}) {
   };
 }
 
-function cashHolding({ create = false } = {}) {
-  let holding = holdings.find(isCashHolding);
+function cashHolding({ create = false, bank, port, name } = {}) {
+  const hasIdentity = Boolean(bank || port);
+  const target = hasIdentity ? normalizeCashHolding({ bank, port, name }) : null;
+  let holding = hasIdentity
+    ? holdings.find((item) => sameCashHolding(item, target))
+    : holdings.find(isCashHolding);
   if (!holding && create) {
-    holding = normalizeCashHolding();
+    holding = normalizeCashHolding(target || { bank, port, name });
     holdings.push(holding);
   }
   if (holding) Object.assign(holding, normalizeCashHolding(holding));
   return holding;
 }
 
-function cashBalance() {
-  return Number(cashHolding()?.cashBalance || 0);
+function cashBalance(context = {}) {
+  if (context.bank || context.port) return Number(cashHolding(context)?.cashBalance || 0);
+  return holdings.filter(isCashHolding).reduce((sum, item) => sum + Number(normalizeCashHolding(item).cashBalance || 0), 0);
 }
 
 function cashBasisForWithdrawal(amount) {
   return Math.max(Number(amount || 0), 0);
 }
 
-function applyCashDelta(valueDelta, basisDelta) {
-  const cash = cashHolding({ create: valueDelta > 0 || basisDelta > 0 });
+function applyCashDelta(valueDelta, basisDelta, context = {}) {
+  const cash = cashHolding({ ...context, create: valueDelta > 0 || basisDelta > 0 });
   if (!cash) return Math.abs(valueDelta) < 0.005;
 
   const nextBalance = Number(cash.cashBalance || 0) + valueDelta;
@@ -602,7 +661,21 @@ function applyCashDelta(valueDelta, basisDelta) {
   cash.baseNav = 1;
   cash.category = CASH_CATEGORY;
   cash.isCash = true;
+  Object.assign(cash, normalizeCashHolding(cash));
   return true;
+}
+
+function cashContextForActivity(activity = {}) {
+  if (activity.cashBank || activity.cashPort) {
+    return cashIdentity({ bank: activity.cashBank, port: activity.cashPort });
+  }
+
+  const relatedHolding = holdings.find((item) => item.symbol === activity.asset);
+  if (relatedHolding && !isCashHolding(relatedHolding)) {
+    return cashIdentity(relatedHolding);
+  }
+
+  return {};
 }
 
 function cashEffectForActivity(activity) {
@@ -630,7 +703,7 @@ function cashEffectForActivity(activity) {
 function applyCashEffect(activity, direction = 1) {
   const effect = cashEffectForActivity(activity);
   if (!effect) return true;
-  return applyCashDelta(effect.value * direction, effect.basis * direction);
+  return applyCashDelta(effect.value * direction, effect.basis * direction, cashContextForActivity(activity));
 }
 
 function normalizeNavHistory(fund, { includeLegacy = true } = {}) {
@@ -1210,10 +1283,10 @@ function renderHoldings() {
     `;
   } else {
     body.innerHTML = sorted.map((item) => isCashHolding(item) ? `
-    <tr data-symbol="${item.symbol}" class="cash-row">
+    <tr data-symbol="${htmlAttr(item.symbol)}" class="cash-row">
       <td data-label="Fund">
         <div class="asset-cell">
-          <span class="asset-name"><strong>${item.symbol} <span class="ccy-chip cash-chip" title="Available cash">Cash</span></strong><span>${item.name}</span></span>
+          <span class="asset-name"><strong>${CASH_SYMBOL} <span class="ccy-chip cash-chip" title="Available cash">Cash</span></strong><span>${item.name}</span></span>
         </div>
       </td>
       <td data-label="Bank / Port"><strong>${item.bank}</strong><span class="cell-note">${item.port}</span></td>
@@ -1227,7 +1300,7 @@ function renderHoldings() {
       <td class="private-value" data-label="Current Value">${money(item.currentValue)}</td>
       <td class="${item.pnlPct >= 0 ? "green" : "red"}" data-label="P&L">${pct(item.pnlPct)}</td>
       <td data-label="">
-        <button class="table-action-button" type="button" data-edit-fund="${item.symbol}" aria-label="Edit Cash">
+        <button class="table-action-button" type="button" data-edit-fund="${htmlAttr(item.symbol)}" aria-label="Edit ${item.bank} ${item.port} Cash">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>
           <span>Edit</span>
         </button>
@@ -2329,7 +2402,7 @@ function importSampleData() {
 
     if (isCashHolding({ ...item, symbol })) {
       const next = normalizeCashHolding({ ...item, symbol });
-      const existingIndex = holdings.findIndex(isCashHolding);
+      const existingIndex = holdings.findIndex((holding) => sameCashHolding(holding, next));
       if (existingIndex >= 0) {
         holdings[existingIndex] = { ...holdings[existingIndex], ...next };
       } else if (next.cashBalance > 0) {
@@ -2504,7 +2577,7 @@ function openEditFundDialog(symbol) {
     const dialog = document.querySelector("#actionDialog");
     const fields = document.querySelector("#dialogFields");
     state.action = "Edit Cash";
-    state.editingSymbol = CASH_SYMBOL;
+    state.editingSymbol = rawFund.symbol;
 
     document.querySelector("#dialogTitle").textContent = "Edit Cash";
     document.querySelector("#dialogCopy").textContent = "Update the visible cash balance and label. Use cash transactions for normal deposits, withdrawals, dividends, and reinvestment.";
@@ -2660,7 +2733,13 @@ function transactionFieldMarkup(type, values = {}) {
   ];
 
   if (type === "Buy") {
-    fields.push({ id: "transactionUseCash", label: `Use Cash balance for this buy (${money(cashBalance())} available)`, kind: "checkbox", checked: Boolean(values.fromCash) });
+    const selectedHolding = holdings.find((item) => item.symbol === values.asset);
+    const selectedCashContext = selectedHolding ? cashIdentity(selectedHolding) : {};
+    const selectedCash = cashBalance(selectedCashContext);
+    const cashLabel = selectedHolding
+      ? `Use ${selectedHolding.bank} ${selectedHolding.port} Cash for this buy (${money(selectedCash)} available)`
+      : `Use Cash balance for this buy (${money(cashBalance())} available)`;
+    fields.push({ id: "transactionUseCash", label: cashLabel, kind: "checkbox", checked: Boolean(values.fromCash) });
   }
 
   fields.push({ id: "transactionSellAll", label: "Sell all units in this fund", kind: "checkbox", checked: Boolean(values.sellAll) });
@@ -2773,11 +2852,25 @@ function bindBuySellHelpers() {
   const useCashInput = document.querySelector("#transactionUseCash");
   if (!typeInput || !assetInput || !unitsInput) return;
 
+  const syncUseCashLabel = () => {
+    if (!useCashInput) return;
+    const holding = holdings.find((item) => item.symbol === assetInput.value);
+    const labelText = useCashInput.closest("label")?.querySelector("span");
+    if (!labelText) return;
+    if (!holding) {
+      labelText.textContent = `Use Cash balance for this buy (${money(cashBalance())} available)`;
+      return;
+    }
+    const available = cashBalance(cashIdentity(holding));
+    labelText.textContent = `Use ${holding.bank} ${holding.port} Cash for this buy (${money(available)} available)`;
+  };
+
   const syncSellAll = () => {
     const isSellAll = typeInput.value === "Sell" && Boolean(sellAllInput?.checked);
     const holding = holdings.find((item) => item.symbol === assetInput.value);
     sellAllInput?.closest("label")?.classList.toggle("is-disabled", typeInput.value !== "Sell");
     useCashInput?.closest("label")?.classList.toggle("is-disabled", typeInput.value !== "Buy");
+    syncUseCashLabel();
     unitsInput.readOnly = isSellAll;
     if (typeInput.value !== "Sell") {
       if (sellAllInput) sellAllInput.checked = false;
@@ -2949,14 +3042,23 @@ function handleConfirm(event) {
       return;
     }
 
-    const cash = cashHolding({ create: values.cashBalance > 0 });
-    if (!cash) {
+    const nextCash = normalizeCashHolding(values);
+    const existingIndex = state.action === "Edit Cash"
+      ? holdings.findIndex((item) => item.symbol === state.editingSymbol)
+      : holdings.findIndex((item) => sameCashHolding(item, nextCash));
+
+    if (existingIndex < 0 && values.cashBalance <= 0) {
       showToast("Cash balance is zero, so there is nothing to save.");
       dialog.close();
       return;
     }
 
-    Object.assign(cash, normalizeCashHolding(values));
+    if (existingIndex >= 0) {
+      holdings[existingIndex] = { ...holdings[existingIndex], ...nextCash };
+    } else {
+      holdings.push(nextCash);
+    }
+
     savePortfolio();
     renderAll();
     showToast(state.action === "Add Asset" ? "Cash added to investments." : "Cash updated.");
@@ -3138,8 +3240,9 @@ function handleConfirm(event) {
       }
 
       if (type === "Buy" && fromCash) {
-        if (amount > cashBalance() + 0.005) {
-          showToast("Cash balance is not high enough for this buy.");
+        const cashContext = cashIdentity(holding);
+        if (amount > cashBalance(cashContext) + 0.005) {
+          showToast(`${holding.bank} ${holding.port} cash is not high enough for this buy.`);
           return;
         }
         cashBasisAmount = cashBasisForWithdrawal(amount);
@@ -3158,10 +3261,14 @@ function handleConfirm(event) {
       ? { grossAmount, taxAmount, netAmount: amount }
       : {};
 
+    const cashContextFields = () => holding && !isCashHolding(holding)
+      ? { cashBank: holding.bank, cashPort: holding.port }
+      : {};
+
     const cashFields = () => {
-      if (type === "Dividend") return { depositedToCash: true, cashAmount: amount, cashBasisAmount: 0 };
-      if (type === "Sell") return { depositedToCash: true, cashAmount: amount, cashBasisAmount };
-      if (type === "Buy" && fromCash) return { fromCash: true, cashAmount: amount, cashBasisAmount };
+      if (type === "Dividend") return { depositedToCash: true, cashAmount: amount, cashBasisAmount: 0, ...cashContextFields() };
+      if (type === "Sell") return { depositedToCash: true, cashAmount: amount, cashBasisAmount, ...cashContextFields() };
+      if (type === "Buy" && fromCash) return { fromCash: true, cashAmount: amount, cashBasisAmount, ...cashContextFields() };
       if (type === "Deposit" || type === "Withdraw") return { cashAmount: amount, cashBasisAmount };
       return {};
     };
@@ -3190,6 +3297,10 @@ function handleConfirm(event) {
       if (!(type === "Dividend" || type === "Sell" || type === "Deposit" || type === "Withdraw" || (type === "Buy" && fromCash))) {
         delete next.cashAmount;
         delete next.cashBasisAmount;
+      }
+      if (!(type === "Dividend" || type === "Sell" || (type === "Buy" && fromCash))) {
+        delete next.cashBank;
+        delete next.cashPort;
       }
       return next;
     };
