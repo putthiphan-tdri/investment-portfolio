@@ -1642,12 +1642,11 @@ function applyOrderToHolding(holding, type, units, amount, direction = 1, costBa
   return true;
 }
 
-// Build the full math for a fund-to-fund switch from the few values the user types.
-// Switching OUT (source) carries no front fee — like a sell. Switching IN (destination)
-// incurs the destination fund's front fee, so units are priced at the marked-up NAV.
+// Build the full math for a fund-to-fund switch from the values the user enters.
+// Switches use the destination NAV directly because any switch fee is calculated manually.
 function buildSwitchData(source, dest, invested, switchOutNav, destBuyingNav) {
-  const destFeeRate = Number(dest.frontFeeRate || 0);
-  const destOfferNav = destBuyingNav * (1 + destFeeRate / 100);
+  const destFeeRate = 0;
+  const destOfferNav = destBuyingNav;
   const sourceUnits = switchOutNav > 0 ? invested / switchOutNav : 0;
   const destUnits = destOfferNav > 0 ? invested / destOfferNav : 0;
   return {
@@ -1703,14 +1702,14 @@ function applySwitch(data, direction = 1) {
       source.archivedPnlPct = srcAmount > 0 ? ((data.amount - srcAmount) / srcAmount) * 100 : 0;
     }
 
-    // Destination side — switch in (with front fee baked into the marked-up NAV).
+    // Destination side — switch in at the exact destination NAV entered by the user.
     const destPrevUnits = Number(dest.units || 0);
     const destPrevAmount = Number(dest.purchaseAmount || 0);
     const destPrevCapital = destPrevUnits * Number(dest.buyingNav || 0);
     const newDestUnits = destPrevUnits + data.destUnits;
     dest.units = newDestUnits;
     dest.purchaseAmount = destPrevAmount + data.amount;
-    // Keep buyingNav as the fee-free base NAV (units-weighted) so feePaid stays accurate.
+    // Keep buyingNav units-weighted across the existing and switched holdings.
     dest.buyingNav = newDestUnits > 0 ? (destPrevCapital + destCapitalAdded) / newDestUnits : data.destBuyingNav;
     if (dest.archived) clearArchiveState(dest);
     return true;
@@ -2955,7 +2954,7 @@ function bindSwitchHelpers() {
     const enough = data.sourceUnits <= heldUnits + 0.0001;
     preview.innerHTML = `
       <div class="order-preview-row"><span>Switch out · ${source.symbol}</span><b>-${data.sourceUnits.toFixed(4)} units</b></div>
-      <div class="order-preview-row"><span>Marked-up NAV · ${dest.symbol} (fee ${data.destFeeRate.toFixed(2)}%)</span><b>${data.destOfferNav.toFixed(4)}</b></div>
+      <div class="order-preview-row"><span>Destination NAV · ${dest.symbol}</span><b>${data.destBuyingNav.toFixed(4)}</b></div>
       <div class="order-preview-row"><span>Switch in · ${dest.symbol}</span><b>+${data.destUnits.toFixed(4)} units</b></div>
       ${enough ? "" : `<div class="order-preview-row order-preview-warn"><span>${source.symbol} holds only ${heldUnits.toFixed(4)} units</span><b>Not enough</b></div>`}
     `;
