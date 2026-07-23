@@ -558,6 +558,12 @@ function rangeChangeMarkup(delta, pctValue) {
   return `<span class="range-change-value">${amount}<span class="range-change-pct ${tone}">${arrow} ${bracketPct(pctValue)}</span></span>`;
 }
 
+function signedMoney(value, decimals = 2) {
+  const amount = Number(value || 0);
+  if (Math.abs(amount) < 0.005) return money(0, decimals);
+  return `${amount > 0 ? "+" : "−"}${money(Math.abs(amount), decimals)}`;
+}
+
 function shortMoney(value) {
   const config = currencyConfig[state.currency];
   const converted = value * config.rate;
@@ -1884,6 +1890,23 @@ function snapshotsForRange(range) {
   return { snapshots: usable, sourceSnapshots: snapshots, startKey, endKey };
 }
 
+function snapshotDailyPnl(snapshot, previous) {
+  if (!snapshot || snapshot.carriedForward) return { delta: 0, deltaPct: 0 };
+
+  const rawDelta = snapshot.dayPnlDelta;
+  const rawDeltaPct = snapshot.dayPnlDeltaPct;
+  const explicitDelta = rawDelta === null || rawDelta === undefined ? NaN : Number(rawDelta);
+  const explicitDeltaPct = rawDeltaPct === null || rawDeltaPct === undefined ? NaN : Number(rawDeltaPct);
+  const delta = Number.isFinite(explicitDelta)
+    ? explicitDelta
+    : previous ? Number(snapshot.pnl || 0) - Number(previous.pnl || 0) : 0;
+  const deltaPct = Number.isFinite(explicitDeltaPct)
+    ? explicitDeltaPct
+    : previous && previous.totalPaid > 0 ? (delta / previous.totalPaid) * 100 : 0;
+
+  return { delta, deltaPct };
+}
+
 function renderChart(range = "1W") {
   const svg = document.querySelector("#performanceChart");
   const insights = document.querySelector("#chartInsights");
@@ -1908,9 +1931,9 @@ function renderChart(range = "1W") {
   if (total.list.length === 0) {
     if (insights) {
       insights.innerHTML = [
-        ["Range Change", "0.00%"],
-        ["High", "No data"],
-        ["Low", "No data"],
+        ["Portfolio Value Change", "0.00%"],
+        ["Highest Portfolio Value", "No data"],
+        ["Lowest Portfolio Value", "No data"],
         ["Logged Days", "0"],
       ].map(([label, value]) => `<div class="chart-insight"><span>${label}</span><strong class="neutral">${value}</strong></div>`).join("");
     }
@@ -1952,9 +1975,9 @@ function renderChart(range = "1W") {
   const low = plottedSnapshots.reduce((minSnapshot, snapshot) => snapshot.totalFundValue < minSnapshot.totalFundValue ? snapshot : minSnapshot, plottedSnapshots[0]);
   if (insights) {
     insights.innerHTML = [
-      { label: "Range Change", value: rangeChangeMarkup(rangeDelta, rangePct), tone: rangeDelta >= 0 ? "green" : "red" },
-      { label: "High", value: `<span class="private-value">${money(high.totalFundValue, 0)}</span>`, tone: "" },
-      { label: "Low", value: `<span class="private-value">${money(low.totalFundValue, 0)}</span>`, tone: "" },
+      { label: "Portfolio Value Change", value: rangeChangeMarkup(rangeDelta, rangePct), tone: rangeDelta >= 0 ? "green" : "red" },
+      { label: "Highest Portfolio Value", value: `<span class="private-value">${money(high.totalFundValue, 0)}</span>`, tone: "" },
+      { label: "Lowest Portfolio Value", value: `<span class="private-value">${money(low.totalFundValue, 0)}</span>`, tone: "" },
       { label: "Logged Days", value: `${displaySnapshots.length}`, tone: "" },
     ].map((item) => `<div class="chart-insight"><span>${item.label}</span><strong class="${item.tone}">${item.value}</strong></div>`).join("");
   }
@@ -1992,10 +2015,18 @@ function renderChart(range = "1W") {
   const pointMarkers = chartSnapshots.map((snapshot, index) => {
     const point = pointForSnapshot(snapshot);
     const previous = chartSnapshots[index - 1];
-    const delta = previous ? snapshot.totalFundValue - previous.totalFundValue : 0;
-    const tone = delta > 0 ? "up" : delta < 0 ? "down" : "flat";
+    const valueDelta = previous ? snapshot.totalFundValue - previous.totalFundValue : 0;
+    const valueDeltaPct = previous && previous.totalFundValue > 0 ? (valueDelta / previous.totalFundValue) * 100 : 0;
+    const dailyPnl = snapshotDailyPnl(snapshot, previous);
+    const tone = dailyPnl.delta > 0 ? "up" : dailyPnl.delta < 0 ? "down" : "flat";
+    const dailyPnlText = state.privacyMode
+      ? `Daily P&L ${bracketPct(dailyPnl.deltaPct)}`
+      : `Daily P&L ${signedMoney(dailyPnl.delta, 0)} ${bracketPct(dailyPnl.deltaPct)}`;
+    const valueChangeText = state.privacyMode
+      ? `Portfolio value change ${bracketPct(valueDeltaPct)}`
+      : `Portfolio value change ${signedMoney(valueDelta, 0)} ${bracketPct(valueDeltaPct)}`;
     const carriedText = snapshot.carriedForward ? ` · carried forward from ${readableDate(snapshot.sourceDate)}` : "";
-    return `<circle class="chart-point ${tone}" cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="${index === chartSnapshots.length - 1 ? "5.2" : "4.4"}"><title>${readableDate(snapshot.date)} · ${tone === "up" ? "up" : tone === "down" ? "down" : "flat"} ${pct(previous && previous.totalFundValue > 0 ? (delta / previous.totalFundValue) * 100 : 0)}${carriedText}</title></circle>`;
+    return `<circle class="chart-point ${tone}" cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="${index === chartSnapshots.length - 1 ? "5.2" : "4.4"}"><title>${readableDate(snapshot.date)} · ${dailyPnlText} · ${valueChangeText}${carriedText}</title></circle>`;
   }).join("");
 
   svg.innerHTML = `
@@ -2135,14 +2166,7 @@ function buildCalendarDays(monthKey, snapshots) {
       if (!snapshot) return { date, day };
 
       const previous = [...snapshots].reverse().find((item) => item.date < date);
-      const explicitDelta = Number(snapshot.dayPnlDelta);
-      const explicitDeltaPct = Number(snapshot.dayPnlDeltaPct);
-      const delta = Number.isFinite(explicitDelta)
-        ? explicitDelta
-        : previous ? Number(snapshot.pnl || 0) - Number(previous.pnl || 0) : 0;
-      const deltaPct = Number.isFinite(explicitDeltaPct)
-        ? explicitDeltaPct
-        : previous && previous.totalPaid > 0 ? (delta / previous.totalPaid) * 100 : 0;
+      const { delta, deltaPct } = snapshotDailyPnl(snapshot, previous);
       return { date, day, snapshot, delta, deltaPct };
     }),
   ];
