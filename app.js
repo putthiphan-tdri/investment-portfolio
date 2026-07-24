@@ -558,6 +558,16 @@ function rangeChangeMarkup(delta, pctValue) {
   return `<span class="range-change-value">${amount}<span class="range-change-pct ${tone}">${arrow} ${bracketPct(pctValue)}</span></span>`;
 }
 
+function currentVsPeakMarkup(delta, pctValue) {
+  if (Math.abs(delta) < 0.005) return `<span class="peak-status">At peak</span>`;
+  return rangeChangeMarkup(delta, pctValue);
+}
+
+function rangeSpreadMarkup(amount, pctValue) {
+  const privateAmount = state.privacyMode ? "" : `<span class="private-value">${money(amount, 0)}</span>`;
+  return `<span class="range-change-value">${privateAmount}<span class="range-change-pct">(${Math.abs(pctValue).toFixed(2)}%)</span></span>`;
+}
+
 function signedMoney(value, decimals = 2) {
   const amount = Number(value || 0);
   if (Math.abs(amount) < 0.005) return money(0, decimals);
@@ -1931,10 +1941,10 @@ function renderChart(range = "1W") {
   if (total.list.length === 0) {
     if (insights) {
       insights.innerHTML = [
-        ["Portfolio Value Change", "0.00%"],
-        ["Highest Portfolio Value", "No data"],
-        ["Lowest Portfolio Value", "No data"],
-        ["Logged Days", "0"],
+        ["Off Peak", "No data"],
+        ["High-Low Range", "No data"],
+        ["Period High", "No data"],
+        ["Period Low", "No data"],
       ].map(([label, value]) => `<div class="chart-insight"><span>${label}</span><strong class="neutral">${value}</strong></div>`).join("");
     }
     const chartWidth = fitChartWidth();
@@ -1967,18 +1977,19 @@ function renderChart(range = "1W") {
     ]
     : plottedSnapshots;
 
-  const rangeStart = plottedSnapshots[0];
   const rangeEnd = plottedSnapshots[plottedSnapshots.length - 1];
-  const rangeDelta = rangeEnd.totalFundValue - rangeStart.totalFundValue;
-  const rangePct = rangeStart.totalFundValue > 0 ? (rangeDelta / rangeStart.totalFundValue) * 100 : 0;
   const high = plottedSnapshots.reduce((maxSnapshot, snapshot) => snapshot.totalFundValue > maxSnapshot.totalFundValue ? snapshot : maxSnapshot, plottedSnapshots[0]);
   const low = plottedSnapshots.reduce((minSnapshot, snapshot) => snapshot.totalFundValue < minSnapshot.totalFundValue ? snapshot : minSnapshot, plottedSnapshots[0]);
+  const currentVsPeak = rangeEnd.totalFundValue - high.totalFundValue;
+  const currentVsPeakPct = high.totalFundValue > 0 ? (currentVsPeak / high.totalFundValue) * 100 : 0;
+  const highLowRange = high.totalFundValue - low.totalFundValue;
+  const highLowRangePct = low.totalFundValue > 0 ? (highLowRange / low.totalFundValue) * 100 : 0;
   if (insights) {
     insights.innerHTML = [
-      { label: "Portfolio Value Change", value: rangeChangeMarkup(rangeDelta, rangePct), tone: rangeDelta >= 0 ? "green" : "red" },
-      { label: "Highest Portfolio Value", value: `<span class="private-value">${money(high.totalFundValue, 0)}</span>`, tone: "" },
-      { label: "Lowest Portfolio Value", value: `<span class="private-value">${money(low.totalFundValue, 0)}</span>`, tone: "" },
-      { label: "Logged Days", value: `${displaySnapshots.length}`, tone: "" },
+      { label: "Off Peak", value: currentVsPeakMarkup(currentVsPeak, currentVsPeakPct), tone: currentVsPeak < -0.005 ? "red" : "green" },
+      { label: "High-Low Range", value: rangeSpreadMarkup(highLowRange, highLowRangePct), tone: "" },
+      { label: "Period High", value: `<span class="private-value">${money(high.totalFundValue, 0)}</span>`, tone: "" },
+      { label: "Period Low", value: `<span class="private-value">${money(low.totalFundValue, 0)}</span>`, tone: "" },
     ].map((item) => `<div class="chart-insight"><span>${item.label}</span><strong class="${item.tone}">${item.value}</strong></div>`).join("");
   }
 
