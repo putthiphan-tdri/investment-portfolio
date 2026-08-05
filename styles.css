@@ -602,16 +602,6 @@ button:active {
   height: 560px;
 }
 
-.performance-controls {
-  display: flex;
-  align-items: end;
-  gap: 12px;
-}
-
-.performance-bank-filter {
-  width: 156px;
-}
-
 .range-tabs {
   display: inline-flex;
   align-items: center;
@@ -2743,17 +2733,6 @@ th[data-col].sort-desc::after {
   .performance-panel .panel-heading {
     align-items: flex-start;
     flex-direction: column;
-  }
-
-  .performance-controls {
-    align-items: stretch;
-    flex-direction: column;
-    width: 100%;
-    gap: 8px;
-  }
-
-  .performance-bank-filter {
-    width: 100%;
   }
 
   .performance-panel .range-tabs {

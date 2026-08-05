@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="./styles.css?v=20260805a" />
+    <link rel="stylesheet" href="./styles.css?v=20260724f" />
   </head>
   <body>
     <div class="app-shell">
@@ -93,26 +93,18 @@
           <article class="panel performance-panel reveal">
             <div class="panel-heading">
               <h2>Fund Performance</h2>
-              <div class="performance-controls">
-                <label class="filter-select performance-bank-filter">
-                  <span>Bank</span>
-                  <select id="performanceBankFilter" aria-label="Filter fund performance by bank">
-                    <option value="">All banks</option>
-                  </select>
-                </label>
-                <div class="range-tabs" aria-label="Chart range">
-                  <button class="active" data-range="1W">1W</button>
-                  <button data-range="1M">1M</button>
-                  <button data-range="3M">3M</button>
-                  <button data-range="6M">6M</button>
-                  <button data-range="YTD">YTD</button>
-                  <button data-range="1Y">1Y</button>
-                  <button data-range="ALL">ALL</button>
-                </div>
+              <div class="range-tabs" aria-label="Chart range">
+                <button class="active" data-range="1W">1W</button>
+                <button data-range="1M">1M</button>
+                <button data-range="3M">3M</button>
+                <button data-range="6M">6M</button>
+                <button data-range="YTD">YTD</button>
+                <button data-range="1Y">1Y</button>
+                <button data-range="ALL">ALL</button>
               </div>
             </div>
             <div class="chart-legend">
-              <span><i class="legend-line solid"></i> <span id="chartValueLegend">Portfolio Value</span></span>
+              <span><i class="legend-line solid"></i> Portfolio Value</span>
               <span><i class="legend-line dashed"></i> Cost Basis</span>
             </div>
             <div class="chart-insights" id="chartInsights" aria-label="Performance range summary"></div>
@@ -237,6 +229,6 @@
     </dialog>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="./app.js?v=20260805b"></script>
+    <script src="./app.js?v=20260724f"></script>
   </body>
 </html>

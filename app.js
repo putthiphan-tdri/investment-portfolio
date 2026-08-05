@@ -31,7 +31,6 @@ const state = {
   tableBank: "",
   tableCategory: "",
   allocationBank: "",
-  performanceBank: "",
   privacyMode: false,
 };
 
@@ -906,44 +905,6 @@ function totals() {
   return totalsForList(funds());
 }
 
-function snapshotMetrics(total) {
-  const dayPnlDelta = total.fundValue - total.baseFundValue;
-  const dayPnlDeltaPct = total.baseFundValue > 0 ? (dayPnlDelta / total.baseFundValue) * 100 : 0;
-  return {
-    totalFundValue: total.fundValue,
-    totalPaid: total.paid,
-    pnl: total.pnl,
-    pnlPct: total.pnlPct,
-    dayPnlDelta,
-    dayPnlDeltaPct,
-  };
-}
-
-function normalizeSnapshotMetrics(snapshot = {}) {
-  const totalFundValue = Number(snapshot.totalFundValue ?? snapshot.fundValue ?? snapshot.currentValue ?? 0);
-  const totalPaid = Number(snapshot.totalPaid ?? snapshot.paid ?? snapshot.investedAmount ?? 0);
-  const pnl = Number(snapshot.pnl ?? totalFundValue - totalPaid);
-  const pnlPct = Number(snapshot.pnlPct ?? (totalPaid > 0 ? (pnl / totalPaid) * 100 : 0));
-  const dayPnlDelta = Number(snapshot.dayPnlDelta ?? snapshot.dailyPnlDelta ?? snapshot.marketPnlDelta);
-  const dayPnlDeltaPct = Number(snapshot.dayPnlDeltaPct ?? snapshot.dailyPnlDeltaPct ?? snapshot.marketPnlDeltaPct);
-  return {
-    totalFundValue: Number.isFinite(totalFundValue) ? totalFundValue : 0,
-    totalPaid: Number.isFinite(totalPaid) ? totalPaid : 0,
-    pnl: Number.isFinite(pnl) ? pnl : 0,
-    pnlPct: Number.isFinite(pnlPct) ? pnlPct : 0,
-    ...(Number.isFinite(dayPnlDelta) ? { dayPnlDelta } : {}),
-    ...(Number.isFinite(dayPnlDeltaPct) ? { dayPnlDeltaPct } : {}),
-  };
-}
-
-function normalizeBankSnapshotTotals(bankTotals = {}) {
-  return Object.entries(bankTotals && typeof bankTotals === "object" ? bankTotals : {}).reduce((result, [bank, metrics]) => {
-    const safeBank = String(bank || "").trim();
-    if (safeBank) result[safeBank] = normalizeSnapshotMetrics(metrics);
-    return result;
-  }, {});
-}
-
 function normalizePortfolioSnapshots(snapshots) {
   const byDate = new Map();
 
@@ -952,30 +913,40 @@ function normalizePortfolioSnapshots(snapshots) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
     if (isWeekendDate(date)) return;
 
-    const metrics = normalizeSnapshotMetrics(snapshot);
-    const bankTotals = normalizeBankSnapshotTotals(snapshot.bankTotals || snapshot.banks);
+    const totalFundValue = Number(snapshot.totalFundValue ?? snapshot.fundValue ?? snapshot.currentValue ?? 0);
+    const totalPaid = Number(snapshot.totalPaid ?? snapshot.paid ?? snapshot.investedAmount ?? 0);
+    const pnl = Number(snapshot.pnl ?? totalFundValue - totalPaid);
+    const pnlPct = Number(snapshot.pnlPct ?? (totalPaid > 0 ? (pnl / totalPaid) * 100 : 0));
+    const dayPnlDelta = Number(snapshot.dayPnlDelta ?? snapshot.dailyPnlDelta ?? snapshot.marketPnlDelta);
+    const dayPnlDeltaPct = Number(snapshot.dayPnlDeltaPct ?? snapshot.dailyPnlDeltaPct ?? snapshot.marketPnlDeltaPct);
 
     byDate.set(date, {
       date,
-      ...metrics,
-      ...(Object.keys(bankTotals).length ? { bankTotals } : {}),
+      totalFundValue: Number.isFinite(totalFundValue) ? totalFundValue : 0,
+      totalPaid: Number.isFinite(totalPaid) ? totalPaid : 0,
+      pnl: Number.isFinite(pnl) ? pnl : 0,
+      pnlPct: Number.isFinite(pnlPct) ? pnlPct : 0,
+      ...(Number.isFinite(dayPnlDelta) ? { dayPnlDelta } : {}),
+      ...(Number.isFinite(dayPnlDeltaPct) ? { dayPnlDeltaPct } : {}),
     });
   });
 
   return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
 }
 
-function currentSnapshot(date = activeDateKey(), bank = "") {
-  const list = funds();
-  const selected = bank ? list.filter((item) => item.bank === bank) : list;
-  const snapshot = { date, ...snapshotMetrics(totalsForList(selected)) };
-  if (bank) return snapshot;
-
-  const bankTotals = {};
-  uniqueSorted(list.map((item) => item.bank)).forEach((bankName) => {
-    bankTotals[bankName] = snapshotMetrics(totalsForList(list.filter((item) => item.bank === bankName)));
-  });
-  return { ...snapshot, bankTotals };
+function currentSnapshot(date = activeDateKey()) {
+  const total = totals();
+  const dayPnlDelta = total.fundValue - total.baseFundValue;
+  const dayPnlDeltaPct = total.baseFundValue > 0 ? (dayPnlDelta / total.baseFundValue) * 100 : 0;
+  return {
+    date,
+    totalFundValue: total.fundValue,
+    totalPaid: total.paid,
+    pnl: total.pnl,
+    pnlPct: total.pnlPct,
+    dayPnlDelta,
+    dayPnlDeltaPct,
+  };
 }
 
 function snapshotsWithLiveCurrent(snapshots, date = activeDateKey()) {
@@ -1914,200 +1885,8 @@ function carryForwardSnapshotsForRange(snapshots, startKey, endKey) {
   return filled;
 }
 
-function historicalNavForDate(fund, date) {
-  const effectiveDate = navEffectiveDate(fund, date);
-  const baseNav = Number(fund.baseNav ?? fund.currentNav ?? fund.buyingNav ?? 0);
-  return normalizeNavHistory(fund)
-    .filter((entry) => entry.date <= effectiveDate)
-    .reduce((value, entry) => Number(entry.nav || 0) > 0 ? Number(entry.nav) : value * (1 + Number(entry.pct || 0) / 100), baseNav);
-}
-
-// Older snapshots only stored portfolio-wide totals. Reverse later activity to
-// rebuild each bank's positions, then value those positions with that day's NAV.
-function historicalPositions(date) {
-  const positions = holdings.map((holding) => {
-    if (isCashHolding(holding)) {
-      const cash = normalizeCashHolding(holding);
-      return { source: cash, isCash: true, bank: cash.bank, port: cash.port, symbol: cash.symbol, units: cash.cashBalance, purchaseAmount: cash.cashBalance };
-    }
-    return {
-      source: holding,
-      isCash: false,
-      bank: holding.bank || "Unassigned Bank",
-      port: holding.port || "",
-      symbol: holding.symbol,
-      units: Number(holding.units || 0),
-      purchaseAmount: Number(holding.purchaseAmount || 0),
-    };
-  });
-  const bySymbol = new Map(positions.filter((item) => !item.isCash).map((item) => [item.symbol, item]));
-  const cashForActivity = (activity) => {
-    const related = bySymbol.get(activity.asset);
-    const bank = activity.cashBank || related?.bank || "";
-    const port = activity.cashPort || related?.port || "";
-    const existing = positions.find((item) => item.isCash && (!bank || item.bank === bank) && (!port || item.port === port))
-      || positions.find((item) => item.isCash && bank && item.bank === bank);
-    if (existing) return existing;
-    if (bank) {
-      const synthetic = { source: {}, isCash: true, bank, port, symbol: cashSymbolFor({ bank, port }), units: 0, purchaseAmount: 0 };
-      positions.push(synthetic);
-      return synthetic;
-    }
-    return positions.find((item) => item.isCash);
-  };
-  const estimatedCost = (position, units) => Number(units || 0) * Number(position?.source?.buyingNav || 0);
-
-  [...activities]
-    .filter((activity) => dateKeyFromActivityDate(activity.date) > date)
-    .sort((left, right) => activitySortValue(right) - activitySortValue(left))
-    .forEach((activity) => {
-      if (activity.switch) {
-        const source = bySymbol.get(activity.switch.fromSymbol);
-        const destination = bySymbol.get(activity.switch.toSymbol);
-        const sourceUnits = Number(activity.switch.sourceUnits || 0);
-        const destinationUnits = Number(activity.switch.destUnits || 0);
-        if (source) {
-          source.units += sourceUnits;
-          source.purchaseAmount += Number(activity.switch.sourceCostRemoved || 0) || estimatedCost(source, sourceUnits);
-        }
-        if (destination) {
-          destination.units = Math.max(destination.units - destinationUnits, 0);
-          destination.purchaseAmount = Math.max(destination.purchaseAmount - Number(activity.amount || activity.switch.amount || 0), 0);
-        }
-      } else if (activityAffectsHolding(activity.type)) {
-        const position = bySymbol.get(activity.asset);
-        const units = activityUnitCount(activity);
-        if (position && activity.type === "Buy") {
-          position.units = Math.max(position.units - units, 0);
-          position.purchaseAmount = Math.max(position.purchaseAmount - Number(activity.amount || 0), 0);
-        } else if (position && activity.type === "Sell") {
-          position.units += units;
-          position.purchaseAmount += Number(activity.cashBasisAmount || 0) || estimatedCost(position, units);
-        }
-      }
-
-      let cashDelta = 0;
-      if (activity.type === "Dividend" && activity.depositedToCash) cashDelta = dividendNetAmount(activity);
-      else if (activity.type === "Sell" && activity.depositedToCash) cashDelta = Number(activity.cashAmount || activity.amount || 0);
-      else if (activity.type === "Buy" && activity.fromCash) cashDelta = -Number(activity.cashAmount || activity.amount || 0);
-      else if (activity.type === "Deposit") cashDelta = Number(activity.cashAmount || activity.amount || 0);
-      else if (activity.type === "Withdraw") cashDelta = -Number(activity.cashAmount || activity.amount || 0);
-      const cash = cashDelta ? cashForActivity(activity) : null;
-      if (cash) {
-        cash.units = Math.max(cash.units - cashDelta, 0);
-        cash.purchaseAmount = cash.units;
-      }
-    });
-
-  return positions;
-}
-
-function rawHistoricalBankTotals(date) {
-  return historicalPositions(date).reduce((result, position) => {
-    if (position.units <= 0 && position.purchaseAmount <= 0) return result;
-    const existing = result[position.bank] || { totalFundValue: 0, totalPaid: 0 };
-    const value = position.isCash
-      ? position.units
-      : position.units * historicalNavForDate(position.source, date) * fundCurrentFx(position.source);
-    const paid = position.isCash
-      ? position.purchaseAmount
-      : position.purchaseAmount * fundBuyFx(position.source);
-    existing.totalFundValue += Math.max(value, 0);
-    existing.totalPaid += Math.max(paid, 0);
-    result[position.bank] = existing;
-    return result;
-  }, {});
-}
-
-function bankHistoryCalibration() {
-  const list = funds();
-  const rawCurrent = rawHistoricalBankTotals(previousWeekdayKey(activeDateKey()));
-  return uniqueSorted(list.map((item) => item.bank)).reduce((result, bank) => {
-    const actual = totalsForList(list.filter((item) => item.bank === bank));
-    const raw = rawCurrent[bank] || { totalFundValue: 0, totalPaid: 0 };
-    result[bank] = {
-      value: raw.totalFundValue > 0 ? actual.fundValue / raw.totalFundValue : 1,
-      paid: raw.totalPaid > 0 ? actual.paid / raw.totalPaid : 1,
-    };
-    return result;
-  }, {});
-}
-
-// Calibrate legacy estimates to today's exact bank totals, while preserving
-// each historical snapshot's original portfolio value and cost basis.
-function legacyBankTotalsForSnapshot(snapshot) {
-  const calibration = bankHistoryCalibration();
-  const rawTotals = rawHistoricalBankTotals(snapshot.date);
-  const calibratedTotals = Object.entries(rawTotals).reduce((result, [bank, item]) => {
-    const factor = calibration[bank] || { value: 1, paid: 1 };
-    result[bank] = {
-      totalFundValue: item.totalFundValue * factor.value,
-      totalPaid: item.totalPaid * factor.paid,
-    };
-    return result;
-  }, {});
-  const calibratedValue = Object.values(calibratedTotals).reduce((sum, item) => sum + item.totalFundValue, 0);
-  const calibratedPaid = Object.values(calibratedTotals).reduce((sum, item) => sum + item.totalPaid, 0);
-
-  return Object.entries(calibratedTotals).reduce((result, [bank, item]) => {
-    const totalFundValue = calibratedValue > 0 ? item.totalFundValue * (snapshot.totalFundValue / calibratedValue) : 0;
-    const valueShare = calibratedValue > 0 ? item.totalFundValue / calibratedValue : 0;
-    const totalPaid = calibratedPaid > 0 ? item.totalPaid * (snapshot.totalPaid / calibratedPaid) : snapshot.totalPaid * valueShare;
-    const pnl = totalFundValue - totalPaid;
-    result[bank] = {
-      totalFundValue,
-      totalPaid,
-      pnl,
-      pnlPct: totalPaid > 0 ? (pnl / totalPaid) * 100 : 0,
-    };
-    return result;
-  }, {});
-}
-
-function snapshotForBank(snapshot, bank) {
-  if (!bank) return snapshot;
-  const storedTotals = snapshot.bankTotals && Object.keys(snapshot.bankTotals).length
-    ? snapshot.bankTotals
-    : legacyBankTotalsForSnapshot(snapshot);
-  return {
-    date: snapshot.date,
-    ...(storedTotals[bank] || normalizeSnapshotMetrics()),
-  };
-}
-
-function bankInceptionDate(bank) {
-  const bankHoldings = holdings.filter((holding) => !isCashHolding(holding) && holding.bank === bank);
-  const symbols = new Set(bankHoldings.map((holding) => holding.symbol));
-  const dates = bankHoldings.flatMap((holding) => normalizeNavHistory(holding).map((entry) => entry.date));
-  activities.forEach((activity) => {
-    const belongsToBank = symbols.has(activity.asset)
-      || symbols.has(activity.switch?.fromSymbol)
-      || symbols.has(activity.switch?.toSymbol)
-      || activity.cashBank === bank;
-    if (belongsToBank) dates.push(dateKeyFromActivityDate(activity.date));
-  });
-  return dates.sort()[0] || "";
-}
-
-function snapshotsForRange(range, bank = "") {
-  const inceptionDate = bank ? bankInceptionDate(bank) : "";
-  const bankSnapshots = snapshotsWithLiveCurrent(portfolioSnapshots)
-    .filter((snapshot) => !inceptionDate || snapshot.date >= inceptionDate)
-    .map((snapshot) => snapshotForBank(snapshot, bank));
-  const firstActiveBankIndex = bank
-    ? bankSnapshots.findIndex((snapshot) => snapshot.totalFundValue > 0 || snapshot.totalPaid > 0)
-    : 0;
-  const filteredSnapshots = firstActiveBankIndex > 0 ? bankSnapshots.slice(firstActiveBankIndex) : bankSnapshots;
-  const snapshots = bank
-    ? filteredSnapshots.map((snapshot, index) => {
-      if (Number.isFinite(Number(snapshot.dayPnlDelta)) && Number.isFinite(Number(snapshot.dayPnlDeltaPct))) return snapshot;
-      const previous = filteredSnapshots[index - 1];
-      if (!previous) return snapshot;
-      const dayPnlDelta = Number(snapshot.pnl || 0) - Number(previous.pnl || 0);
-      const dayPnlDeltaPct = previous.totalPaid > 0 ? (dayPnlDelta / previous.totalPaid) * 100 : 0;
-      return { ...snapshot, dayPnlDelta, dayPnlDeltaPct };
-    })
-    : filteredSnapshots;
+function snapshotsForRange(range) {
+  const snapshots = snapshotsWithLiveCurrent(portfolioSnapshots);
   if (snapshots.length === 0) return { snapshots: [], startKey: activeDateKey(), endKey: activeDateKey() };
 
   const endKey = activeDateKey();
@@ -2158,20 +1937,7 @@ function renderChart(range = "1W") {
   const right = 32;
   const top = 26;
   const height = 382;
-  const completeTotal = totals();
-  const bankOptions = uniqueSorted(completeTotal.list.map((item) => item.bank));
-  if (state.performanceBank && !bankOptions.includes(state.performanceBank)) state.performanceBank = "";
-  const bankSelect = document.querySelector("#performanceBankFilter");
-  if (bankSelect) bankSelect.innerHTML = optionMarkup(bankOptions, state.performanceBank, "All banks");
-  const selectedList = state.performanceBank
-    ? completeTotal.list.filter((item) => item.bank === state.performanceBank)
-    : completeTotal.list;
-  const total = totalsForList(selectedList);
-  const valueLegend = document.querySelector("#chartValueLegend");
-  if (valueLegend) valueLegend.textContent = state.performanceBank ? `${state.performanceBank} Value` : "Portfolio Value";
-  svg.setAttribute("aria-label", state.performanceBank
-    ? `${state.performanceBank} value and cost basis line chart`
-    : "Portfolio value and cost basis line chart");
+  const total = totals();
   if (total.list.length === 0) {
     if (insights) {
       insights.innerHTML = [
@@ -2193,10 +1959,10 @@ function renderChart(range = "1W") {
     return;
   }
 
-  const { snapshots, sourceSnapshots, startKey, endKey } = snapshotsForRange(range, state.performanceBank);
+  const { snapshots, sourceSnapshots, startKey, endKey } = snapshotsForRange(range);
   const latestSavedSnapshot = snapshots[snapshots.length - 1];
   const displaySnapshots = latestSavedSnapshot && latestSavedSnapshot.date < endKey
-    ? [...snapshots, currentSnapshot(endKey, state.performanceBank)]
+    ? [...snapshots, currentSnapshot(endKey)]
     : snapshots;
   const filledSnapshots = carryForwardSnapshotsForRange(sourceSnapshots, startKey, endKey);
   const plottedSnapshots = filledSnapshots.length > 0 ? filledSnapshots : displaySnapshots;
@@ -2267,10 +2033,9 @@ function renderChart(range = "1W") {
     const dailyPnlText = state.privacyMode
       ? `Daily P&L ${bracketPct(dailyPnl.deltaPct)}`
       : `Daily P&L ${signedMoney(dailyPnl.delta, 0)} ${bracketPct(dailyPnl.deltaPct)}`;
-    const valueLabel = state.performanceBank ? `${state.performanceBank} value change` : "Portfolio value change";
     const valueChangeText = state.privacyMode
-      ? `${valueLabel} ${bracketPct(valueDeltaPct)}`
-      : `${valueLabel} ${signedMoney(valueDelta, 0)} ${bracketPct(valueDeltaPct)}`;
+      ? `Portfolio value change ${bracketPct(valueDeltaPct)}`
+      : `Portfolio value change ${signedMoney(valueDelta, 0)} ${bracketPct(valueDeltaPct)}`;
     const carriedText = snapshot.carriedForward ? ` · carried forward from ${readableDate(snapshot.sourceDate)}` : "";
     return `<circle class="chart-point ${tone}" cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="${index === chartSnapshots.length - 1 ? "5.2" : "4.4"}"><title>${readableDate(snapshot.date)} · ${dailyPnlText} · ${valueChangeText}${carriedText}</title></circle>`;
   }).join("");
@@ -2500,7 +2265,7 @@ function renderBreakdown() {
   }
 
   const maxContribution = Math.max(...contributionList.map((item) => Math.abs(item.pnlBaht)), 1);
-  const sorted = [...contributionList].sort((a, b) => b.pnlBaht - a.pnlBaht);
+  const sorted = [...contributionList].sort((a, b) => Math.abs(b.pnlBaht) - Math.abs(a.pnlBaht));
 
   document.querySelector(".pnl-list").innerHTML = sorted.map((item) => `
     <button class="pnl-row" data-action="${item.symbol} P&L contribution selected">
@@ -3788,12 +3553,6 @@ function bindInteractions() {
       renderChart(button.dataset.range);
       showToast(`Performance range changed to ${button.dataset.range}.`);
     });
-  });
-
-  document.querySelector("#performanceBankFilter")?.addEventListener("change", (event) => {
-    state.performanceBank = event.target.value;
-    renderChart(document.querySelector(".range-tabs .active")?.dataset.range || "1W");
-    showToast(state.performanceBank ? `Fund performance filtered to ${state.performanceBank}.` : "Fund performance showing all banks.");
   });
 
   document.querySelectorAll(".action-tile[data-action]").forEach((button) => {
