@@ -2265,7 +2265,7 @@ function renderBreakdown() {
   }
 
   const maxContribution = Math.max(...contributionList.map((item) => Math.abs(item.pnlBaht)), 1);
-  const sorted = [...contributionList].sort((a, b) => Math.abs(b.pnlBaht) - Math.abs(a.pnlBaht));
+  const sorted = [...contributionList].sort((a, b) => b.pnlBaht - a.pnlBaht);
 
   document.querySelector(".pnl-list").innerHTML = sorted.map((item) => `
     <button class="pnl-row" data-action="${item.symbol} P&L contribution selected">
