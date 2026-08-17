@@ -715,6 +715,7 @@ button:active {
 }
 
 .line-chart {
+  position: relative;
   flex: 1 1 auto;
   min-height: 0;
   margin-top: 14px;
@@ -760,6 +761,23 @@ button:active {
 .chart-point {
   stroke: var(--surface);
   stroke-width: 3;
+  transition: r 140ms ease, stroke-width 140ms ease;
+}
+
+.chart-point-hit {
+  fill: transparent;
+  pointer-events: all;
+}
+
+.chart-point-target {
+  cursor: crosshair;
+  outline: none;
+}
+
+.chart-point-target:hover .chart-point,
+.chart-point-target:focus .chart-point {
+  r: 7px;
+  stroke-width: 4;
 }
 
 .chart-point.up {
@@ -772,6 +790,58 @@ button:active {
 
 .chart-point.flat {
   fill: var(--blue);
+}
+
+.chart-tooltip {
+  position: absolute;
+  z-index: 4;
+  width: max-content;
+  min-width: 190px;
+  max-width: min(240px, calc(100% - 16px));
+  padding: 10px 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 10px 28px rgba(20, 32, 61, 0.18);
+  color: #17213d;
+  pointer-events: none;
+}
+
+.chart-tooltip[hidden] {
+  display: none;
+}
+
+.chart-tooltip > strong {
+  display: block;
+  margin-bottom: 7px;
+  font-size: 12px;
+}
+
+.chart-tooltip-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 18px;
+  font-size: 11px;
+  line-height: 1.65;
+}
+
+.chart-tooltip-row span {
+  color: var(--muted);
+}
+
+.chart-tooltip-row b {
+  color: #17213d;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.chart-tooltip-row b.green {
+  color: var(--green);
+}
+
+.chart-tooltip-row b.red {
+  color: var(--red);
 }
 
 .allocation-panel {

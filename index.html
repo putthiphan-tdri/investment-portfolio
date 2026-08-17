@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="./styles.css?v=20260724f" />
+    <link rel="stylesheet" href="./styles.css?v=20260817a" />
   </head>
   <body>
     <div class="app-shell">
@@ -110,6 +110,7 @@
             <div class="chart-insights" id="chartInsights" aria-label="Performance range summary"></div>
             <div class="line-chart">
               <svg id="performanceChart" viewBox="0 0 1400 500" role="img" aria-label="Portfolio value and cost basis line chart"></svg>
+              <div class="chart-tooltip" id="performanceTooltip" role="status" hidden></div>
             </div>
           </article>
 
@@ -229,6 +230,6 @@
     </dialog>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="./app.js?v=20260807a"></script>
+    <script src="./app.js?v=20260817a"></script>
   </body>
 </html>

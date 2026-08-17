@@ -1917,6 +1917,58 @@ function snapshotDailyPnl(snapshot, previous) {
   return { delta, deltaPct };
 }
 
+function bindPerformanceChartTooltip(svg) {
+  const wrap = svg.closest(".line-chart");
+  const tooltip = document.querySelector("#performanceTooltip");
+  if (!wrap || !tooltip) return;
+
+  const hide = () => {
+    tooltip.hidden = true;
+  };
+  const show = (point, event) => {
+    const value = Number(point.dataset.value || 0);
+    const cost = Number(point.dataset.cost || 0);
+    const dailyPnl = Number(point.dataset.dailyPnl || 0);
+    const dailyPnlPct = Number(point.dataset.dailyPnlPct || 0);
+    const pnlClass = dailyPnl > 0 ? "green" : dailyPnl < 0 ? "red" : "";
+    const privateValue = (amount) => state.privacyMode ? "••••" : money(amount, 0);
+    const pnlValue = state.privacyMode
+      ? bracketPct(dailyPnlPct)
+      : `${signedMoney(dailyPnl, 0)} ${bracketPct(dailyPnlPct)}`;
+
+    tooltip.innerHTML = `
+      <strong>${htmlAttr(readableDate(point.dataset.date))}</strong>
+      <div class="chart-tooltip-row"><span>Portfolio value</span><b>${privateValue(value)}</b></div>
+      <div class="chart-tooltip-row"><span>Cost basis</span><b>${privateValue(cost)}</b></div>
+      <div class="chart-tooltip-row"><span>Daily P&amp;L</span><b class="${pnlClass}">${pnlValue}</b></div>
+    `;
+    tooltip.hidden = false;
+
+    const wrapRect = wrap.getBoundingClientRect();
+    const pointRect = point.getBoundingClientRect();
+    const anchorX = Number.isFinite(event?.clientX) ? event.clientX - wrapRect.left : pointRect.left + pointRect.width / 2 - wrapRect.left;
+    const anchorY = Number.isFinite(event?.clientY) ? event.clientY - wrapRect.top : pointRect.top + pointRect.height / 2 - wrapRect.top;
+    const tooltipRect = tooltip.getBoundingClientRect();
+    const left = Math.min(Math.max(anchorX + 12, 8), Math.max(wrapRect.width - tooltipRect.width - 8, 8));
+    const preferredTop = anchorY - tooltipRect.height - 12;
+    const top = preferredTop >= 8 ? preferredTop : Math.min(anchorY + 16, Math.max(wrapRect.height - tooltipRect.height - 8, 8));
+    tooltip.style.left = `${left}px`;
+    tooltip.style.top = `${top}px`;
+  };
+
+  hide();
+  svg.querySelectorAll("[data-chart-point]").forEach((point) => {
+    point.addEventListener("pointerenter", (event) => show(point, event));
+    point.addEventListener("pointermove", (event) => show(point, event));
+    point.addEventListener("pointerleave", hide);
+    point.addEventListener("focus", () => show(point));
+    point.addEventListener("blur", hide);
+    point.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") hide();
+    });
+  });
+}
+
 function renderChart(range = "1W") {
   const svg = document.querySelector("#performanceChart");
   const insights = document.querySelector("#chartInsights");
@@ -1939,6 +1991,8 @@ function renderChart(range = "1W") {
   const height = 382;
   const total = totals();
   if (total.list.length === 0) {
+    const tooltip = document.querySelector("#performanceTooltip");
+    if (tooltip) tooltip.hidden = true;
     if (insights) {
       insights.innerHTML = [
         ["Off Peak", "No data"],
@@ -2037,7 +2091,13 @@ function renderChart(range = "1W") {
       ? `Portfolio value change ${bracketPct(valueDeltaPct)}`
       : `Portfolio value change ${signedMoney(valueDelta, 0)} ${bracketPct(valueDeltaPct)}`;
     const carriedText = snapshot.carriedForward ? ` · carried forward from ${readableDate(snapshot.sourceDate)}` : "";
-    return `<circle class="chart-point ${tone}" cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="${index === chartSnapshots.length - 1 ? "5.2" : "4.4"}"><title>${readableDate(snapshot.date)} · ${dailyPnlText} · ${valueChangeText}${carriedText}</title></circle>`;
+    const ariaLabel = state.privacyMode
+      ? `${readableDate(snapshot.date)}, portfolio values hidden, ${dailyPnlText}`
+      : `${readableDate(snapshot.date)}, portfolio value ${money(snapshot.totalFundValue, 0)}, cost basis ${money(snapshot.totalPaid, 0)}, ${dailyPnlText}`;
+    return `<g class="chart-point-target" data-chart-point data-date="${snapshot.date}" data-value="${snapshot.totalFundValue}" data-cost="${snapshot.totalPaid}" data-daily-pnl="${dailyPnl.delta}" data-daily-pnl-pct="${dailyPnl.deltaPct}" tabindex="0" role="img" aria-label="${htmlAttr(ariaLabel)}">
+      <circle class="chart-point-hit" cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="15"></circle>
+      <circle class="chart-point ${tone}" cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="${index === chartSnapshots.length - 1 ? "5.2" : "4.4"}"><title>${readableDate(snapshot.date)} · ${dailyPnlText} · ${valueChangeText}${carriedText}</title></circle>
+    </g>`;
   }).join("");
 
   svg.innerHTML = `
@@ -2061,6 +2121,7 @@ function renderChart(range = "1W") {
     <path class="portfolio-line" d="${portfolioPath}" />
     ${pointMarkers}
   `;
+  bindPerformanceChartTooltip(svg);
 }
 
 function renderAllocation() {
