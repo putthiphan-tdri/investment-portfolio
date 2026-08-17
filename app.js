@@ -1331,13 +1331,13 @@ function renderHoldings() {
       <td data-label="Bank / Port"><strong>${item.bank}</strong><span class="cell-note">${item.port}</span></td>
       <td data-label="Category"><span class="category-pill" style="--pill-color:${colorForCategory(item.category)}">${item.category}</span></td>
       <td class="private-value" data-label="Cash Basis">${money(item.purchaseAmount)}</td>
-      <td data-label="Front Fee">N/A</td>
       <td data-label="Units">N/A</td>
       <td data-label="Buying NAV">N/A</td>
       <td data-label="Daily NAV %"><span class="neutral">0.00%</span></td>
       <td data-label="Current NAV">N/A</td>
       <td class="private-value" data-label="Current Value">${money(item.currentValue)}</td>
-      <td class="${item.pnlPct >= 0 ? "green" : "red"}" data-label="P&L">${pct(item.pnlPct)}</td>
+      <td data-label="P&L">N/A</td>
+      <td class="${item.pnlPct >= 0 ? "green" : "red"}" data-label="P&L (%)">${pct(item.pnlPct)}</td>
       <td data-label="">
         <button class="table-action-button" type="button" data-edit-fund="${htmlAttr(item.symbol)}" aria-label="Edit ${item.bank} ${item.port} Cash">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>
@@ -1355,7 +1355,6 @@ function renderHoldings() {
       <td data-label="Bank / Port"><strong>${item.bank}</strong><span class="cell-note">${item.port}</span></td>
       <td data-label="Category"><span class="category-pill" style="--pill-color:${colorForCategory(item.category)}">${item.category}</span></td>
       <td class="private-value" data-label="Invested">${money(item.purchaseAmount)}</td>
-      <td data-label="Front Fee">${item.frontFeeRate.toFixed(2)}%</td>
       <td class="private-value" data-label="Units">${item.units.toLocaleString("en-US", { minimumFractionDigits: 4, maximumFractionDigits: 4 })}</td>
       <td class="private-value" data-label="Buying NAV">${nav(item.buyingNav)}</td>
       <td data-label="Daily NAV %">
@@ -1375,7 +1374,8 @@ function renderHoldings() {
         </span>
       </td>` : `
       <td class="private-value" data-label="Current Value">${money(item.currentValue)}</td>`}
-      <td class="${item.pnlPct >= 0 ? "green" : "red"}" data-label="P&L">${pct(item.pnlPct)}</td>
+      <td class="private-value ${item.pnlBaht >= 0 ? "green" : "red"}" data-label="P&L">${money(item.pnlBaht)}</td>
+      <td class="${item.pnlPct >= 0 ? "green" : "red"}" data-label="P&L (%)">${pct(item.pnlPct)}</td>
       <td data-label="">
         <button class="table-action-button" type="button" data-edit-fund="${item.symbol}" aria-label="Edit ${item.symbol}">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>
@@ -1393,8 +1393,8 @@ function renderHoldings() {
       <td></td>
       <td></td>
       <td></td>
-      <td></td>
       <td class="private-value">${money(total.fundValue)}</td>
+      <td class="private-value ${total.pnl >= 0 ? "green" : "red"}">${money(total.pnl)}</td>
       <td class="${total.pnlPct >= 0 ? "green" : "red"}">${pct(total.pnlPct)}</td>
       <td></td>
     </tr>
