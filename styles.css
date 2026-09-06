@@ -3214,8 +3214,8 @@ th[data-col].sort-desc::after {
 .holdings-view { margin-left: auto; }
 .holdings-panel { scroll-margin-top: 100px; }
 .holding-expand { display: none; }
-.holdings-overview th:nth-child(3), .holdings-overview th:nth-child(4), .holdings-overview th:nth-child(5), .holdings-overview th:nth-child(6), .holdings-overview th:nth-child(8),
-.holdings-overview tr:not(.empty-table-row) td:nth-child(3), .holdings-overview tr:not(.empty-table-row) td:nth-child(4), .holdings-overview tr:not(.empty-table-row) td:nth-child(5), .holdings-overview tr:not(.empty-table-row) td:nth-child(6), .holdings-overview tr:not(.empty-table-row) td:nth-child(8) { display: none; }
+.holdings-overview th:nth-child(3), .holdings-overview th:nth-child(4), .holdings-overview th:nth-child(6), .holdings-overview th:nth-child(8),
+.holdings-overview tr:not(.empty-table-row) td:nth-child(3), .holdings-overview tr:not(.empty-table-row) td:nth-child(4), .holdings-overview tr:not(.empty-table-row) td:nth-child(6), .holdings-overview tr:not(.empty-table-row) td:nth-child(8) { display: none; }
 .holdings-overview table { min-width: 860px; }
 .insight-dialog { width: min(620px, calc(100vw - 32px)); }
 .insight-description, .insight-empty { color: var(--muted); font-size: 13px; line-height: 1.6; }
