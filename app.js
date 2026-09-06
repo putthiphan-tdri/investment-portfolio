@@ -32,6 +32,8 @@ const state = {
   tableCategory: "",
   allocationBank: "",
   privacyMode: false,
+  chartMode: "pnl",
+  holdingsView: "overview",
 };
 
 const currencyConfig = {
@@ -917,8 +919,10 @@ function normalizePortfolioSnapshots(snapshots) {
     const totalPaid = Number(snapshot.totalPaid ?? snapshot.paid ?? snapshot.investedAmount ?? 0);
     const pnl = Number(snapshot.pnl ?? totalFundValue - totalPaid);
     const pnlPct = Number(snapshot.pnlPct ?? (totalPaid > 0 ? (pnl / totalPaid) * 100 : 0));
-    const dayPnlDelta = Number(snapshot.dayPnlDelta ?? snapshot.dailyPnlDelta ?? snapshot.marketPnlDelta);
-    const dayPnlDeltaPct = Number(snapshot.dayPnlDeltaPct ?? snapshot.dailyPnlDeltaPct ?? snapshot.marketPnlDeltaPct);
+    const rawDaily = snapshot.dayPnlDelta ?? snapshot.dailyPnlDelta ?? snapshot.marketPnlDelta;
+    const rawDailyPct = snapshot.dayPnlDeltaPct ?? snapshot.dailyPnlDeltaPct ?? snapshot.marketPnlDeltaPct;
+    const dayPnlDelta = rawDaily == null || rawDaily === "" ? NaN : Number(rawDaily);
+    const dayPnlDeltaPct = rawDailyPct == null || rawDailyPct === "" ? NaN : Number(rawDailyPct);
 
     byDate.set(date, {
       date,
@@ -1242,31 +1246,23 @@ function renderHero() {
   const total = totals();
   const navMove = total.fundValue - total.baseFundValue;
   const navMovePct = total.baseFundValue > 0 ? (navMove / total.baseFundValue) * 100 : 0;
-  const pnlNode = document.querySelector(".primary-value .metric-up");
-  const pnlPercentNode = document.querySelector("#pnlPercent");
-  const dayChangeNode = document.querySelector("#dayChange");
-  const dayChangePctNode = document.querySelector("#dayChangePct");
-
-  const pnlDirection = total.pnl === 0 ? "" : total.pnl >= 0 ? "▲ " : "▼ ";
-  const pnlAmount = `${pnlDirection}${money(Math.abs(total.pnl))}`;
-  const pnlPercent = `(${Math.abs(total.pnlPct).toFixed(2)}%)`;
-
   document.querySelector(".primary-value strong").innerHTML = `<span class="private-value">${money(total.fundValue)}</span>`;
-  if (pnlNode) pnlNode.innerHTML = `<span class="private-value">${pnlAmount}</span> <span>${pnlPercent}</span>`;
-  pnlNode?.classList.toggle("red", total.pnl < 0);
-  pnlNode?.classList.toggle("neutral", total.pnl === 0);
+  const navDates = total.list.filter((item) => !isCashHolding(item)).map((item) => item.navDate).filter(Boolean).sort();
+  const freshness = document.querySelector(".last-updated");
+  freshness.textContent = !navDates.length ? "No NAV data" : navDates[0] === navDates.at(-1) ? `NAV as of ${readableDate(navDates[0])}` : "Mixed NAV dates";
+  freshness.title = navDates.length ? `NAV dates: ${readableDate(navDates[0])} – ${readableDate(navDates.at(-1))}` : "Add a fund to record NAV data.";
+  const cash = total.list.filter(isCashHolding).reduce((sum, item) => sum + item.currentValue, 0);
+  setText("#availableCash", money(cash));
+  setText("#pnlAmount", signedMoney(total.pnl));
   setText("#pnlPercent", pct(total.pnlPct));
-  pnlPercentNode?.classList.toggle("green", total.pnlPct > 0);
-  pnlPercentNode?.classList.toggle("red", total.pnlPct < 0);
-  pnlPercentNode?.classList.toggle("neutral", total.pnlPct === 0);
-  if (dayChangeNode) dayChangeNode.innerHTML = `<span class="private-value">${navMove === 0 ? "" : navMove >= 0 ? "▲ " : "▼ "}${money(Math.abs(navMove))}</span>`;
-  dayChangeNode?.classList.toggle("green", navMove > 0);
-  dayChangeNode?.classList.toggle("red", navMove < 0);
-  dayChangeNode?.classList.toggle("neutral", navMove === 0);
-  setText("#dayChangePct", `${navMove === 0 ? "" : navMove >= 0 ? "▲ " : "▼ "}${Math.abs(navMovePct).toFixed(2)}%`);
-  dayChangePctNode?.classList.toggle("green", navMove > 0);
-  dayChangePctNode?.classList.toggle("red", navMove < 0);
-  dayChangePctNode?.classList.toggle("neutral", navMove === 0);
+  document.querySelector("#dayChange").innerHTML = `<span class="private-value">${signedMoney(navMove)}</span>`;
+  setText("#dayChangePct", pct(navMovePct));
+  [["#pnlAmount", total.pnl], ["#pnlPercent", total.pnl], ["#dayChange", navMove], ["#dayChangePct", navMove]].forEach(([selector, amount]) => {
+    const node = document.querySelector(selector);
+    node.classList.toggle("green", amount > 0);
+    node.classList.toggle("red", amount < 0);
+    node.classList.toggle("neutral", amount === 0);
+  });
 
   const heroCard = document.querySelector(".hero-card");
   if (heroCard) {
@@ -1403,13 +1399,38 @@ function renderHoldings() {
 
   document.querySelectorAll("th[data-col]").forEach((th) => {
     th.classList.remove("sort-asc", "sort-desc");
+    th.setAttribute("aria-sort", th.dataset.col === sortState.col ? (sortState.dir === "asc" ? "ascending" : "descending") : "none");
     if (th.dataset.col === sortState.col) {
       th.classList.add(sortState.dir === "asc" ? "sort-asc" : "sort-desc");
     }
   });
 
+  document.querySelector(".holdings-panel").classList.toggle("holdings-overview", state.holdingsView === "overview");
+  document.querySelectorAll("[data-holdings-view]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.holdingsView === state.holdingsView)));
   body.querySelectorAll("tr[data-symbol]").forEach((row) => {
-    row.addEventListener("click", () => openEditFundDialog(row.dataset.symbol));
+    if (!row.classList.contains("cash-row")) {
+      const name = row.querySelector(".asset-name strong");
+      const link = document.createElement("button");
+      link.type = "button";
+      link.className = "fund-details-link";
+      link.innerHTML = name.innerHTML;
+      link.setAttribute("aria-label", `View history for ${row.dataset.symbol}`);
+      link.addEventListener("click", () => openFundInsight(row.dataset.symbol));
+      name.replaceChildren(link);
+    }
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "holding-expand";
+    button.textContent = "Show details";
+    button.setAttribute("aria-label", `Show details for ${row.dataset.symbol}`);
+    button.setAttribute("aria-expanded", "false");
+    button.addEventListener("click", () => {
+      const expanded = row.classList.toggle("holding-expanded");
+      button.textContent = expanded ? "Less detail" : "Show details";
+      button.setAttribute("aria-expanded", String(expanded));
+      button.setAttribute("aria-label", `${expanded ? "Hide" : "Show"} details for ${row.dataset.symbol}`);
+    });
+    row.lastElementChild.prepend(button);
   });
 
   body.querySelectorAll(".nav-change-input").forEach((input) => {
@@ -1792,7 +1813,8 @@ function computeNiceTicks(dataMin, dataMax, count = 5) {
   const multiplier = niceMultipliers.find((m) => m * magnitude >= rawStep) ?? 10;
   const step = multiplier * magnitude;
   const niceMin = Math.floor(dataMin / step) * step;
-  return Array.from({ length: count }, (_, i) => niceMin + (count - 1 - i) * step);
+  const intervals = Math.max(count - 1, Math.ceil((dataMax - niceMin) / step));
+  return Array.from({ length: intervals + 1 }, (_, i) => niceMin + (intervals - i) * step);
 }
 
 function rangeStartKey(range, endKey) {
@@ -1917,54 +1939,71 @@ function snapshotDailyPnl(snapshot, previous) {
   return { delta, deltaPct };
 }
 
+// A stored holdings P&L balance is distinct from a recorded day's NAV movement.
+// Missing daily observations stay missing; changes in holdings can realize gains.
+function recordedDailyPnl(snapshot) {
+  if (!snapshot || snapshot.carriedForward || snapshot.dayPnlDelta == null || snapshot.dayPnlDelta === "") return null;
+  const amount = Number(snapshot.dayPnlDelta);
+  return Number.isFinite(amount) ? amount : null;
+}
+
+function performanceObservations(snapshots, mode) {
+  return snapshots.map((snapshot) => ({
+    ...snapshot,
+    chartValue: mode === "daily" ? recordedDailyPnl(snapshot)
+      : mode === "pnl" ? Number(snapshot.pnl) : Number(snapshot.totalFundValue),
+  }));
+}
+
+function chartAxisLabel(value, config) {
+  const amount = value * config.rate;
+  const sign = amount < 0 ? "−" : "";
+  const absolute = Math.abs(amount);
+  const scaled = absolute >= 1e6 ? `${Number((absolute / 1e6).toFixed(2))}M`
+    : absolute >= 1e3 ? `${Number((absolute / 1e3).toFixed(1))}K`
+    : Number(absolute.toFixed(2)).toString();
+  return `${sign}${config.symbol}${scaled}`;
+}
+
 function bindPerformanceChartTooltip(svg) {
   const wrap = svg.closest(".line-chart");
   const tooltip = document.querySelector("#performanceTooltip");
   if (!wrap || !tooltip) return;
-
-  const hide = () => {
-    tooltip.hidden = true;
-  };
-  const show = (point, event) => {
-    const value = Number(point.dataset.value || 0);
-    const cost = Number(point.dataset.cost || 0);
-    const dailyPnl = Number(point.dataset.dailyPnl || 0);
-    const dailyPnlPct = Number(point.dataset.dailyPnlPct || 0);
-    const pnlClass = dailyPnl > 0 ? "green" : dailyPnl < 0 ? "red" : "";
-    const privateValue = (amount) => state.privacyMode ? "••••" : money(amount, 0);
-    const pnlValue = state.privacyMode
-      ? bracketPct(dailyPnlPct)
-      : `${signedMoney(dailyPnl, 0)} ${bracketPct(dailyPnlPct)}`;
-
+  const points = [...svg.querySelectorAll("[data-chart-point]")];
+  const hide = () => { tooltip.hidden = true; };
+  const show = (point) => {
+    const amount = Number(point.dataset.amount);
+    const daily = point.dataset.daily === "" ? null : Number(point.dataset.daily);
+    const privateMoney = (value) => state.privacyMode ? "••••" : signedMoney(value, 2);
+    const tone = amount > 0 ? "green" : amount < 0 ? "red" : "neutral";
     tooltip.innerHTML = `
       <strong>${htmlAttr(readableDate(point.dataset.date))}</strong>
-      <div class="chart-tooltip-row"><span>Portfolio value</span><b>${privateValue(value)}</b></div>
-      <div class="chart-tooltip-row"><span>Cost basis</span><b>${privateValue(cost)}</b></div>
-      <div class="chart-tooltip-row"><span>Daily P&amp;L</span><b class="${pnlClass}">${pnlValue}</b></div>
-    `;
+      <div class="chart-tooltip-row"><span>${state.chartMode === "value" ? "Portfolio value" : state.chartMode === "pnl" ? "Unrealized P&L" : "Daily P&L"}</span><b class="${state.chartMode === "value" ? "" : tone}">${state.chartMode === "value" ? (state.privacyMode ? "••••" : money(amount)) : privateMoney(amount)}</b></div>
+      ${state.chartMode !== "daily" ? `<div class="chart-tooltip-row"><span>${state.chartMode === "pnl" ? "P&L (%)" : "Unrealized P&L"}</span><b>${state.chartMode === "pnl" ? "" : privateMoney(Number(point.dataset.pnl)) + " · "}${Number(point.dataset.pnlPct).toFixed(2)}%</b></div>` : ""}
+      ${state.chartMode === "value" ? `<div class="chart-tooltip-row"><span>Cost basis</span><b>${state.privacyMode ? "••••" : money(Number(point.dataset.cost))}</b></div>` : ""}
+      ${state.chartMode === "pnl" ? `<div class="chart-tooltip-row"><span>Daily P&L</span><b>${daily === null ? "Not recorded" : privateMoney(daily)}</b></div>` : ""}
+      ${point.dataset.source ? `<small>Last recorded ${htmlAttr(readableDate(point.dataset.source))}; carried forward.</small>` : ""}`;
     tooltip.hidden = false;
-
-    const wrapRect = wrap.getBoundingClientRect();
-    const pointRect = point.getBoundingClientRect();
-    const anchorX = Number.isFinite(event?.clientX) ? event.clientX - wrapRect.left : pointRect.left + pointRect.width / 2 - wrapRect.left;
-    const anchorY = Number.isFinite(event?.clientY) ? event.clientY - wrapRect.top : pointRect.top + pointRect.height / 2 - wrapRect.top;
-    const tooltipRect = tooltip.getBoundingClientRect();
-    const left = Math.min(Math.max(anchorX + 12, 8), Math.max(wrapRect.width - tooltipRect.width - 8, 8));
-    const preferredTop = anchorY - tooltipRect.height - 12;
-    const top = preferredTop >= 8 ? preferredTop : Math.min(anchorY + 16, Math.max(wrapRect.height - tooltipRect.height - 8, 8));
-    tooltip.style.left = `${left}px`;
-    tooltip.style.top = `${top}px`;
+    const rect = wrap.getBoundingClientRect();
+    const anchor = point.getBoundingClientRect();
+    tooltip.style.left = `${Math.max(8, Math.min(anchor.x - rect.x + anchor.width / 2 + 12, rect.width - tooltip.offsetWidth - 8))}px`;
+    tooltip.style.top = `${Math.max(8, Math.min(anchor.y - rect.y - tooltip.offsetHeight - 12, rect.height - tooltip.offsetHeight - 8))}px`;
   };
-
   hide();
-  svg.querySelectorAll("[data-chart-point]").forEach((point) => {
-    point.addEventListener("pointerenter", (event) => show(point, event));
-    point.addEventListener("pointermove", (event) => show(point, event));
+  points.forEach((point, index) => {
+    point.addEventListener("pointerenter", () => show(point));
     point.addEventListener("pointerleave", hide);
+    point.addEventListener("click", () => { point.focus(); show(point); });
     point.addEventListener("focus", () => show(point));
     point.addEventListener("blur", hide);
     point.addEventListener("keydown", (event) => {
       if (event.key === "Escape") hide();
+      const next = event.key === "ArrowRight" ? index + 1 : event.key === "ArrowLeft" ? index - 1
+        : event.key === "Home" ? 0 : event.key === "End" ? points.length - 1 : null;
+      if (next !== null) {
+        event.preventDefault();
+        points[Math.max(0, Math.min(points.length - 1, next))]?.focus();
+      }
     });
   });
 }
@@ -1972,155 +2011,80 @@ function bindPerformanceChartTooltip(svg) {
 function renderChart(range = "1W") {
   const svg = document.querySelector("#performanceChart");
   const insights = document.querySelector("#chartInsights");
-  // Match the viewBox to the container's aspect ratio so the plot fills the
-  // panel instead of letterboxing inside a fixed 1400x500 box. This must run
-  // AFTER the insight cards are in the DOM, because they change the chart
-  // area's height — measuring too early leaves the plot narrow.
-  const fitChartWidth = () => {
-    const wrap = svg.closest(".line-chart");
-    const rect = wrap ? wrap.getBoundingClientRect() : null;
-    const fitted = rect && rect.width > 0 && rect.height > 40
-      ? Math.round(Math.min(Math.max((rect.width / rect.height) * 500, 600), 2800))
-      : 1400;
-    svg.setAttribute("viewBox", `0 0 ${fitted} 500`);
-    return fitted;
-  };
-  const left = 74;
-  const right = 32;
-  const top = 26;
-  const height = 382;
-  const total = totals();
-  if (total.list.length === 0) {
-    const tooltip = document.querySelector("#performanceTooltip");
-    if (tooltip) tooltip.hidden = true;
-    if (insights) {
-      insights.innerHTML = [
-        ["Off Peak", "No data"],
-        ["High-Low Range", "No data"],
-        ["Period High", "No data"],
-        ["Period Low", "No data"],
-      ].map(([label, value]) => `<div class="chart-insight"><span>${label}</span><strong class="neutral">${value}</strong></div>`).join("");
-    }
-    const chartWidth = fitChartWidth();
-    const width = chartWidth - left - right;
-    svg.innerHTML = `
-      <line class="chart-grid" x1="${left}" y1="${top}" x2="${left + width}" y2="${top}" />
-      <line class="chart-grid" x1="${left}" y1="${top + 96}" x2="${left + width}" y2="${top + 96}" />
-      <line class="chart-grid" x1="${left}" y1="${top + 192}" x2="${left + width}" y2="${top + 192}" />
-      <line class="chart-grid" x1="${left}" y1="${top + 288}" x2="${left + width}" y2="${top + 288}" />
-      <text class="chart-axis" x="${chartWidth / 2}" y="${top + 192}" text-anchor="middle">Add funds to see performance</text>
-    `;
+  const mode = state.chartMode;
+  const name = mode === "value" ? "Portfolio value" : mode === "daily" ? "Daily P&L" : "Unrealized P&L";
+  const description = mode === "value"
+    ? "Holdings and cash versus cost basis. Changes can include money added or withdrawn."
+    : mode === "pnl"
+    ? "Value minus cost of holdings at each date. Excludes realized gains and dividends; selling a holding can reduce this balance."
+    : "Recorded daily NAV movement. Dates without a recorded daily figure are left blank.";
+  document.querySelector("#chartDescription").textContent = description;
+  document.querySelector(".chart-legend").innerHTML = mode === "value"
+    ? '<span><i class="legend-line solid"></i> Portfolio value</span><span><i class="legend-line dashed"></i> Cost basis</span>'
+    : '<span><i class="legend-dot profit"></i> Gain</span><span><i class="legend-dot loss"></i> Loss</span><span>Zero = break-even</span>';
+  document.querySelectorAll("[data-chart-mode]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.chartMode === mode)));
+  document.querySelectorAll("[data-range]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.range === range)));
+  svg.setAttribute("aria-label", `${name}, ${range}. Focus a data point and use left or right arrow keys to explore.`);
+  const { sourceSnapshots = [], startKey, endKey } = snapshotsForRange(range);
+  const observations = performanceObservations(carryForwardSnapshotsForRange(sourceSnapshots, startKey, endKey), mode);
+  const available = observations.filter((item) => item.chartValue !== null && Number.isFinite(item.chartValue));
+  const last = available.at(-1);
+  const privateMoney = (value) => `<span class="private-value">${mode === "value" ? money(value, 0) : signedMoney(value, 0)}</span>`;
+  const tone = (value) => mode === "value" ? "" : value > 0 ? "green" : value < 0 ? "red" : "neutral";
+  const high = available.length ? Math.max(...available.map((p) => p.chartValue)) : 0;
+  const low = available.length ? Math.min(...available.map((p) => p.chartValue)) : 0;
+  insights.innerHTML = last ? `
+    <div class="chart-insight chart-insight-main"><span>${name}${mode === "daily" ? " · latest recorded" : " · at period end"}</span><strong class="${tone(last.chartValue)}">${privateMoney(last.chartValue)}</strong><small>${readableDate(last.date)}${last.carriedForward ? " · carried forward" : ""}</small></div>
+    <div class="chart-insight"><span>Period high</span><strong class="${tone(high)}">${privateMoney(high)}</strong></div>
+    <div class="chart-insight"><span>Period low</span><strong class="${tone(low)}">${privateMoney(low)}</strong></div>`
+    : `<div class="chart-insight chart-insight-main"><span>${name}</span><strong class="neutral">No recorded data</strong><small>${readableDate(startKey)} – ${readableDate(endKey)}</small></div>`;
+  const rect = svg.closest(".line-chart").getBoundingClientRect();
+  const chartWidth = Math.round(Math.max(rect.width, 240));
+  const chartHeight = Math.round(Math.max(rect.height, 220));
+  svg.setAttribute("viewBox", `0 0 ${chartWidth} ${chartHeight}`);
+  const left = chartWidth < 500 ? 58 : 76, right = 22, top = 18, bottom = 42;
+  const width = chartWidth - left - right, height = chartHeight - top - bottom;
+  if (!last) {
+    svg.innerHTML = `<text class="chart-empty" x="${chartWidth / 2}" y="${chartHeight / 2}" text-anchor="middle">${totals().list.length ? "No observations in this range" : "Add a fund to see performance"}</text>`;
+    document.querySelector("#performanceTooltip").hidden = true;
     return;
   }
-
-  const { snapshots, sourceSnapshots, startKey, endKey } = snapshotsForRange(range);
-  const latestSavedSnapshot = snapshots[snapshots.length - 1];
-  const displaySnapshots = latestSavedSnapshot && latestSavedSnapshot.date < endKey
-    ? [...snapshots, currentSnapshot(endKey)]
-    : snapshots;
-  const filledSnapshots = carryForwardSnapshotsForRange(sourceSnapshots, startKey, endKey);
-  const plottedSnapshots = filledSnapshots.length > 0 ? filledSnapshots : displaySnapshots;
   const startMs = parseDateKey(startKey).getTime();
-  let endMs = parseDateKey(endKey).getTime();
-  if (endMs <= startMs) endMs = parseDateKey(shiftDate(startKey, 1, "day")).getTime();
-
-  const chartSnapshots = plottedSnapshots.length === 1
-    ? [
-      { ...plottedSnapshots[0], date: startKey },
-      { ...plottedSnapshots[0], date: dateKeyFromDate(new Date(endMs)) },
-    ]
-    : plottedSnapshots;
-
-  const rangeEnd = plottedSnapshots[plottedSnapshots.length - 1];
-  const high = plottedSnapshots.reduce((maxSnapshot, snapshot) => snapshot.totalFundValue > maxSnapshot.totalFundValue ? snapshot : maxSnapshot, plottedSnapshots[0]);
-  const low = plottedSnapshots.reduce((minSnapshot, snapshot) => snapshot.totalFundValue < minSnapshot.totalFundValue ? snapshot : minSnapshot, plottedSnapshots[0]);
-  const currentVsPeak = rangeEnd.totalFundValue - high.totalFundValue;
-  const currentVsPeakPct = high.totalFundValue > 0 ? (currentVsPeak / high.totalFundValue) * 100 : 0;
-  const highLowRange = high.totalFundValue - low.totalFundValue;
-  const highLowRangePct = low.totalFundValue > 0 ? (highLowRange / low.totalFundValue) * 100 : 0;
-  if (insights) {
-    insights.innerHTML = [
-      { label: "Off Peak", value: currentVsPeakMarkup(currentVsPeak, currentVsPeakPct), tone: currentVsPeak < -0.005 ? "red" : "green" },
-      { label: "High-Low Range", value: rangeSpreadMarkup(highLowRange, highLowRangePct), tone: "" },
-      { label: "Period High", value: `<span class="private-value">${money(high.totalFundValue, 0)}</span>`, tone: "" },
-      { label: "Period Low", value: `<span class="private-value">${money(low.totalFundValue, 0)}</span>`, tone: "" },
-    ].map((item) => `<div class="chart-insight"><span>${item.label}</span><strong class="${item.tone}">${item.value}</strong></div>`).join("");
-  }
-
-  const chartWidth = fitChartWidth();
-  const width = chartWidth - left - right;
-  const all = chartSnapshots.flatMap((snapshot) => [snapshot.totalFundValue, snapshot.totalPaid]);
-  const rawMin = Math.min(...all) - Math.max(total.fundValue, total.paid, 1) * 0.035;
-  const rawMax = Math.max(...all) + Math.max(total.fundValue, total.paid, 1) * 0.025;
-  const yLabels = computeNiceTicks(rawMin, rawMax, 5);
-  const min = yLabels[yLabels.length - 1];
-  const max = yLabels[0];
-  const portfolioPath = snapshotPath(chartSnapshots, "totalFundValue", min, max, startMs, endMs, width, height, left, top);
-  const costPath = snapshotPath(chartSnapshots, "totalPaid", min, max, startMs, endMs, width, height, left, top);
-  const latest = chartSnapshots[chartSnapshots.length - 1];
-  const latestMs = parseDateKey(latest.date).getTime();
-  const latestX = left + ((latestMs - startMs) / Math.max(endMs - startMs, 1)) * width;
-  const latestY = top + height - ((latest.totalFundValue - min) / Math.max(max - min, 1)) * height;
-  const areaPath = `${portfolioPath} L${latestX.toFixed(1)},${top + height} L${left},${top + height} Z`;
-  const tickMarks = chartTickMarks(chartSnapshots, startMs, endMs, range);
+  const endMs = Math.max(parseDateKey(endKey).getTime(), startMs + 86400000);
+  const values = available.flatMap((p) => mode === "value" ? [p.chartValue, p.totalPaid] : [p.chartValue, 0]);
+  const rawMin = Math.min(...values), rawMax = Math.max(...values);
+  const padding = Math.max((rawMax - rawMin) * .12, Math.abs(rawMax) * .015, 1);
+  const labels = computeNiceTicks(rawMin - padding, rawMax + padding, 5);
+  const min = labels.at(-1), max = labels[0];
+  const x = (date) => left + (parseDateKey(date).getTime() - startMs) / (endMs - startMs) * width;
+  const y = (value) => top + height - (value - min) / (max - min) * height;
+  const zeroY = y(0);
+  const path = snapshotPath(available, "chartValue", min, max, startMs, endMs, width, height, left, top);
+  const ticks = chartTickMarks(available, startMs, endMs, range, chartWidth < 500 ? 3 : 5);
+  const visibleTicks = chartWidth < 500 && ticks.length > 4 ? ticks.filter((_, i) => i === 0 || i === Math.floor(ticks.length / 2) || i === ticks.length - 1) : ticks;
   const config = currencyConfig[state.currency];
-  const fmtY = (v) => {
-    if (state.privacyMode) return "••••";
-    const c = v * config.rate;
-    if (Math.abs(c) >= 1_000_000) return `${config.symbol}${(c / 1_000_000).toFixed(1)}M`;
-    return `${config.symbol}${Math.round(c / 1_000)}K`;
-  };
-  const pointForSnapshot = (snapshot) => {
-    const snapshotMs = parseDateKey(snapshot.date).getTime();
-    return {
-      x: left + ((snapshotMs - startMs) / Math.max(endMs - startMs, 1)) * width,
-      y: top + height - ((snapshot.totalFundValue - min) / Math.max(max - min, 1)) * height,
-    };
-  };
-  const pointMarkers = chartSnapshots.map((snapshot, index) => {
-    const point = pointForSnapshot(snapshot);
-    const previous = chartSnapshots[index - 1];
-    const valueDelta = previous ? snapshot.totalFundValue - previous.totalFundValue : 0;
-    const valueDeltaPct = previous && previous.totalFundValue > 0 ? (valueDelta / previous.totalFundValue) * 100 : 0;
-    const dailyPnl = snapshotDailyPnl(snapshot, previous);
-    const tone = dailyPnl.delta > 0 ? "up" : dailyPnl.delta < 0 ? "down" : "flat";
-    const dailyPnlText = state.privacyMode
-      ? `Daily P&L ${bracketPct(dailyPnl.deltaPct)}`
-      : `Daily P&L ${signedMoney(dailyPnl.delta, 0)} ${bracketPct(dailyPnl.deltaPct)}`;
-    const valueChangeText = state.privacyMode
-      ? `Portfolio value change ${bracketPct(valueDeltaPct)}`
-      : `Portfolio value change ${signedMoney(valueDelta, 0)} ${bracketPct(valueDeltaPct)}`;
-    const carriedText = snapshot.carriedForward ? ` · carried forward from ${readableDate(snapshot.sourceDate)}` : "";
-    const ariaLabel = state.privacyMode
-      ? `${readableDate(snapshot.date)}, portfolio values hidden, ${dailyPnlText}`
-      : `${readableDate(snapshot.date)}, portfolio value ${money(snapshot.totalFundValue, 0)}, cost basis ${money(snapshot.totalPaid, 0)}, ${dailyPnlText}`;
-    return `<g class="chart-point-target" data-chart-point data-date="${snapshot.date}" data-value="${snapshot.totalFundValue}" data-cost="${snapshot.totalPaid}" data-daily-pnl="${dailyPnl.delta}" data-daily-pnl-pct="${dailyPnl.deltaPct}" tabindex="0" role="img" aria-label="${htmlAttr(ariaLabel)}">
-      <circle class="chart-point-hit" cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="15"></circle>
-      <circle class="chart-point ${tone}" cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="${index === chartSnapshots.length - 1 ? "5.2" : "4.4"}"><title>${readableDate(snapshot.date)} · ${dailyPnlText} · ${valueChangeText}${carriedText}</title></circle>
-    </g>`;
+  const axis = labels.map((label) => `<line class="chart-grid" x1="${left}" y1="${y(label)}" x2="${left + width}" y2="${y(label)}"/><text class="chart-axis" x="${left - 8}" y="${y(label) + 4}" text-anchor="end">${state.privacyMode ? "••••" : chartAxisLabel(label, config)}</text>`).join("");
+  const dates = visibleTicks.map((tick) => `<text class="chart-axis" x="${left + (tick.ms - startMs) / (endMs - startMs) * width}" y="${top + height + 28}" text-anchor="middle">${tick.label}</text>`).join("");
+  const zeroLine = mode === "value" ? "" : `<line class="chart-zero" x1="${left}" y1="${zeroY}" x2="${left + width}" y2="${zeroY}"/>`;
+  let plot = "";
+  if (mode === "value") {
+    plot = `<path class="cost-line" d="${snapshotPath(available, "totalPaid", min, max, startMs, endMs, width, height, left, top)}"/><path class="portfolio-line" d="${path}"/>`;
+  } else if (mode === "pnl") {
+    const area = `${path} L${x(last.date)},${zeroY} L${x(available[0].date)},${zeroY} Z`;
+    plot = `<defs><clipPath id="profitClip"><rect x="${left}" y="${top}" width="${width}" height="${Math.max(0, zeroY - top)}"/></clipPath><clipPath id="lossClip"><rect x="${left}" y="${zeroY}" width="${width}" height="${Math.max(0, top + height - zeroY)}"/></clipPath></defs>
+      <path d="${area}" class="pnl-area profit" clip-path="url(#profitClip)"/><path d="${area}" class="pnl-area loss" clip-path="url(#lossClip)"/>
+      <path d="${path}" class="pnl-line profit" clip-path="url(#profitClip)"/><path d="${path}" class="pnl-line loss" clip-path="url(#lossClip)"/>`;
+  }
+  const barWidth = Math.max(1, Math.min(30, width / ((endMs - startMs) / 86400000 + 1) * .65));
+  const points = available.map((point, index) => {
+    const px = x(point.date), py = y(point.chartValue);
+    const daily = recordedDailyPnl(point);
+    const pointTone = point.chartValue > 0 ? "profit" : point.chartValue < 0 ? "loss" : "flat";
+    const label = `${readableDate(point.date)}, ${name} ${state.privacyMode ? "values hidden" : money(point.chartValue)}, ${point.carriedForward ? "carried forward" : "recorded"}`;
+    const bar = mode === "daily" ? `<rect class="daily-bar ${pointTone}" x="${px - barWidth / 2}" y="${Math.min(py, zeroY)}" width="${barWidth}" height="${Math.max(2, Math.abs(py - zeroY))}" rx="2"/>` : "";
+    return `<g class="chart-point-target" data-chart-point data-date="${point.date}" data-amount="${point.chartValue}" data-pnl="${point.pnl}" data-pnl-pct="${point.pnlPct}" data-cost="${point.totalPaid}" data-daily="${daily ?? ""}" data-source="${point.carriedForward ? point.sourceDate : ""}" tabindex="${index === available.length - 1 ? 0 : -1}" role="img" aria-label="${htmlAttr(label)}">${bar}<circle class="chart-point-hit" cx="${px}" cy="${py}" r="14"/><circle class="chart-observation ${mode === "value" ? "value" : pointTone}${point.carriedForward ? " carried" : ""}" cx="${px}" cy="${py}" r="${mode === "daily" ? 0 : available.length > 40 && index !== available.length - 1 ? 1.5 : 3.5}"/></g>`;
   }).join("");
-
-  svg.innerHTML = `
-    <defs>
-      <linearGradient id="portfolioFill" x1="0" x2="0" y1="0" y2="1">
-        <stop offset="0%" stop-color="#315dff" stop-opacity="0.14" />
-        <stop offset="100%" stop-color="#315dff" stop-opacity="0" />
-      </linearGradient>
-    </defs>
-    ${yLabels.map((label, index) => {
-      const y = top + index * (height / (yLabels.length - 1));
-      return `<line class="chart-grid" x1="${left}" y1="${y}" x2="${left + width}" y2="${y}" />
-        <text class="chart-axis" x="${left - 7}" y="${y + 4}" text-anchor="end">${fmtY(label)}</text>`;
-    }).join("")}
-    ${tickMarks.map((mark) => {
-      const x = left + ((mark.ms - startMs) / Math.max(endMs - startMs, 1)) * width;
-      return `<text class="chart-axis" x="${x.toFixed(1)}" y="${top + height + 42}" text-anchor="middle">${mark.label}</text>`;
-    }).join("")}
-    <path class="portfolio-area" d="${areaPath}" />
-    <path class="cost-line" d="${costPath}" />
-    <path class="portfolio-line" d="${portfolioPath}" />
-    ${pointMarkers}
-  `;
+  svg.innerHTML = axis + dates + zeroLine + plot + points;
   bindPerformanceChartTooltip(svg);
 }
 
@@ -2302,7 +2266,7 @@ function renderValueCalendar() {
           ? `${readableDate(day.date)} ended ${tone === "up" ? "up" : tone === "down" ? "down" : "flat"} by ${pct(day.deltaPct)}.`
           : `${readableDate(day.date)} investment P&L ${tone === "up" ? "improved" : tone === "down" ? "fell" : "was flat"} by ${money(Math.abs(day.delta))}, ${pct(day.deltaPct)}. Portfolio value ended at ${money(day.snapshot.totalFundValue)}.`;
         return `
-          <button class="calendar-day has-value ${tone}${heat}" type="button" data-action="${actionDetail}">
+          <button class="calendar-day has-value ${tone}${heat}" type="button" data-calendar-insight="${day.date}" aria-label="${htmlAttr(actionDetail)}">
             <span>${day.day}</span>
             <strong class="private-value ${deltaClass}">${deltaStr}</strong>
           </button>
@@ -2329,7 +2293,7 @@ function renderBreakdown() {
   const sorted = [...contributionList].sort((a, b) => b.pnlBaht - a.pnlBaht);
 
   document.querySelector(".pnl-list").innerHTML = sorted.map((item) => `
-    <button class="pnl-row" data-action="${item.symbol} P&L contribution selected">
+    <button class="pnl-row" data-fund-insight="${htmlAttr(item.symbol)}">
       <span class="pnl-fund">
         <b>${item.symbol}</b>
         <small>${item.category}</small>
@@ -2367,7 +2331,7 @@ function renderChannelExposure() {
           const assetLabel = `${group.fundCount} fund${group.fundCount === 1 ? "" : "s"} · ${cashLabel}`;
           const exposurePct = total.fundValue > 0 ? (group.totalValue / total.fundValue) * 100 : 0;
           return `
-            <button class="bank-pnl-row" data-action="${group.bank} bank P&L selected">
+            <button class="bank-pnl-row" data-bank-insight="${htmlAttr(group.bank)}">
               <span class="bank-pnl-main">
                 <b>${group.bank}</b>
                 <small>${assetLabel}</small>
@@ -2463,7 +2427,7 @@ function fieldMarkup(config) {
 function refreshPrices() {
   const btn = document.querySelector("#refreshButton");
   btn.classList.add("spinning");
-  const heroValues = document.querySelectorAll(".primary-value strong, .primary-value .metric-up, #pnlPercent, #dayChange, #dayChangePct");
+  const heroValues = document.querySelectorAll(".primary-value strong, #pnlAmount, #availableCash, #pnlPercent, #dayChange, #dayChangePct");
   heroValues.forEach((el) => el.classList.add("skeleton-pulse"));
 
   window.setTimeout(() => {
@@ -3572,8 +3536,76 @@ function deleteEditingFund() {
   showToast(`${removed.symbol} deleted.`);
 }
 
+function loadViewPreferences() {
+  try {
+    const saved = JSON.parse(localStorage.getItem("myFundsPortfolio.views.v1") || "{}");
+    if (["value", "pnl", "daily"].includes(saved.chartMode)) state.chartMode = saved.chartMode;
+    if (["overview", "detailed"].includes(saved.holdingsView)) state.holdingsView = saved.holdingsView;
+  } catch { /* An unavailable preference store does not block the portfolio. */ }
+}
+
+function saveViewPreferences() {
+  try {
+    localStorage.setItem("myFundsPortfolio.views.v1", JSON.stringify({ chartMode: state.chartMode, holdingsView: state.holdingsView }));
+  } catch { /* View controls remain usable without browser storage. */ }
+}
+
+function insightActivityMarkup(list) {
+  if (!list.length) return '<p class="insight-empty">No recorded transactions.</p>';
+  return `<ul class="insight-list">${list.map((item) => `<li><div><strong>${htmlAttr(item.type)} · ${htmlAttr(item.asset || item.switch?.fromSymbol || "Cash")}</strong><small>${htmlAttr(item.date)}${item.switch ? ` · ${htmlAttr(item.switch.fromSymbol)} → ${htmlAttr(item.switch.toSymbol)}` : ""}</small></div><span class="private-value">${htmlAttr(activityAmountLabel(item))}</span></li>`).join("")}</ul>`;
+}
+
+function showInsight(title, content) {
+  document.querySelector("#insightTitle").textContent = title;
+  document.querySelector("#insightContent").innerHTML = content;
+  document.querySelector("#insightDialog").showModal();
+}
+
+function openFundInsight(symbol) {
+  const raw = holdings.find((fund) => fund.symbol === symbol);
+  if (!raw) return;
+  const fund = deriveFund(raw);
+  const history = normalizeNavHistory(raw).filter((entry) => entry.date <= activeDateKey()).reverse();
+  const transactions = sortedActivities().filter((item) => item.asset === symbol || item.switch?.fromSymbol === symbol || item.switch?.toSymbol === symbol);
+  showInsight(symbol, `<p class="insight-description">${htmlAttr(fund.name)} · ${htmlAttr(fund.bank)}<br>Valued using the log date ${readableDate(activeDateKey())}.</p>
+    <dl class="insight-metrics"><div><dt>Current value</dt><dd class="private-value">${money(fund.currentValue)}</dd></div><div><dt>Unrealized P&L</dt><dd class="${fund.pnlBaht < 0 ? "red" : "green"}"><span class="private-value">${signedMoney(fund.pnlBaht)}</span> <small>${pct(fund.pnlPct)}</small></dd></div></dl>
+    <h3>Recorded NAV history</h3>
+    ${history.length ? `<ul class="insight-list">${history.map((entry) => `<li><span>${readableDate(entry.date)}</span><strong><span class="private-value">${entry.nav ? nav(entry.nav) : "NAV not recorded"}</span> <small>${pct(entry.pct)}</small></strong></li>`).join("")}</ul>` : '<p class="insight-empty">No NAV history recorded for this fund.</p>'}
+    <h3>Transaction history · all dates</h3>${insightActivityMarkup(transactions)}`);
+}
+
+function openCalendarInsight(date) {
+  const snapshot = snapshotsWithLiveCurrent(portfolioSnapshots).find((item) => item.date === date);
+  if (!snapshot) return;
+  const daily = recordedDailyPnl(snapshot);
+  const transactions = sortedActivities().filter((item) => {
+    const parsed = new Date(item.date);
+    return !Number.isNaN(parsed.getTime()) && dateKeyFromDate(parsed) === date;
+  });
+  showInsight(readableDate(date), `<p class="insight-description">Recorded portfolio snapshot and transactions for this date.</p>
+    <dl class="insight-metrics"><div><dt>Portfolio value</dt><dd class="private-value">${money(snapshot.totalFundValue)}</dd></div><div><dt>Unrealized P&L</dt><dd class="private-value">${signedMoney(snapshot.pnl)}</dd></div><div><dt>Recorded daily P&L</dt><dd class="${daily === null ? "" : "private-value"}">${daily === null ? "Not recorded" : signedMoney(daily)}</dd></div><div><dt>Cost basis</dt><dd class="private-value">${money(snapshot.totalPaid)}</dd></div></dl>
+    <h3>Transactions on this date</h3>${insightActivityMarkup(transactions)}
+    <p class="insight-description">Historical fund-level P&L contributions are not stored in this portfolio snapshot.</p>`);
+}
+
 function bindDynamicButtons() {
-  document.querySelectorAll(".calendar-day[data-action], .bank-pnl-row, .channel-row, .archive-row, .pnl-row").forEach((button) => {
+  document.querySelectorAll("[data-fund-insight], [data-bank-insight], [data-calendar-insight]").forEach((button) => {
+    if (button.dataset.bound) return;
+    button.dataset.bound = "true";
+    button.addEventListener("click", () => {
+      if (button.dataset.fundInsight) openFundInsight(button.dataset.fundInsight);
+      else if (button.dataset.calendarInsight) openCalendarInsight(button.dataset.calendarInsight);
+      else {
+        state.tableSearch = "";
+        state.tableCategory = "";
+        state.tableBank = button.dataset.bankInsight;
+        renderHoldings();
+        document.querySelector("#holdingBankFilter").focus({ preventScroll: true });
+        document.querySelector(".holdings-panel").scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    });
+  });
+  document.querySelectorAll(".channel-row, .archive-row").forEach((button) => {
     if (button.dataset.bound) return;
     button.dataset.bound = "true";
     button.addEventListener("click", () => showToast(button.dataset.action || button.querySelector("b")?.textContent || ""));
@@ -3592,6 +3624,33 @@ function bindDynamicButtons() {
 
 function bindInteractions() {
   bindAllocationTooltip();
+  document.querySelectorAll("[data-chart-mode]").forEach((button) => button.addEventListener("click", () => {
+    state.chartMode = button.dataset.chartMode;
+    saveViewPreferences();
+    renderChart(document.querySelector(".range-tabs .active")?.dataset.range || "1W");
+  }));
+  document.querySelectorAll("[data-holdings-view]").forEach((button) => button.addEventListener("click", () => {
+    state.holdingsView = button.dataset.holdingsView;
+    saveViewPreferences();
+    renderHoldings();
+  }));
+  document.querySelector("#latestLogButton").addEventListener("click", () => {
+    const dates = portfolioSnapshots.map((snapshot) => snapshot.date).filter((date) => date <= todayKey());
+    const latest = dates.sort().at(-1) || previousWeekdayKey(todayKey());
+    const input = document.querySelector("#logDateInput");
+    input.value = latest;
+    input.dispatchEvent(new Event("change"));
+  });
+  document.addEventListener("click", (event) => {
+    const menu = document.querySelector(".data-menu");
+    if (!menu.contains(event.target) || event.target.closest(".action-tile")) menu.open = false;
+  });
+  document.querySelector(".data-menu").addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.currentTarget.open = false;
+      event.currentTarget.querySelector("summary").focus();
+    }
+  });
 
   let chartResizeTimer;
   window.addEventListener("resize", () => {
@@ -3612,7 +3671,6 @@ function bindInteractions() {
       document.querySelectorAll(".range-tabs button").forEach((tab) => tab.classList.remove("active"));
       button.classList.add("active");
       renderChart(button.dataset.range);
-      showToast(`Performance range changed to ${button.dataset.range}.`);
     });
   });
 
@@ -3678,7 +3736,7 @@ function bindInteractions() {
     document.querySelector("#currencyLabel").textContent = state.currency;
     savePortfolio({ captureSnapshot: false });
     renderAll();
-    const flipTargets = document.querySelectorAll(".primary-value strong, .primary-value .metric-up, #pnlPercent, #dayChange, #dayChangePct, .donut-center strong");
+    const flipTargets = document.querySelectorAll(".primary-value strong, #pnlAmount, #availableCash, #pnlPercent, #dayChange, #dayChangePct, .donut-center strong");
     flipTargets.forEach((el) => el.classList.remove("value-flip"));
     void document.querySelector(".primary-value strong")?.offsetWidth;
     flipTargets.forEach((el) => el.classList.add("value-flip"));
@@ -3691,6 +3749,11 @@ function bindInteractions() {
   document.querySelector("#dialogCancel").addEventListener("click", () => document.querySelector("#actionDialog").close());
 
   document.querySelectorAll("th[data-col]").forEach((th) => {
+    th.tabIndex = 0;
+    th.scope = "col";
+    th.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") { event.preventDefault(); th.click(); }
+    });
     th.addEventListener("click", () => {
       const col = th.dataset.col;
       if (sortState.col === col) {
@@ -3716,16 +3779,12 @@ function bindInteractions() {
 }
 
 function initDates() {
-  const today = todayLabel();
-  const lastUpdatedEl = document.querySelector(".last-updated");
-  const now = new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
-  const fullLabel = `Last updated: ${today} ${now}`;
-  lastUpdatedEl.textContent = fullLabel;
-  document.querySelector("#refreshButton").title = fullLabel;
+  document.querySelector("#refreshButton").title = "Update NAV for the selected log date";
 }
 
 initDates();
 loadPortfolio();
+loadViewPreferences();
 document.querySelector("#currencyLabel").textContent = state.currency;
 applyPrivacyMode();
 savePortfolio({ captureSnapshot: false });
