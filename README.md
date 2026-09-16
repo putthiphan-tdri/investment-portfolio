@@ -2,7 +2,7 @@
 
 A static web app for tracking Thai mutual fund holdings and available cash: NAV updates, multi-currency funds (THB/USD), dividend/sell proceeds deposited to Cash, P&L calendar heatmap, category allocation, and performance charts.
 
-All portfolio data lives in the browser's `localStorage` — nothing is stored on a server. Use **Export JSON** / **Import JSON** in the app to back up or move data between browsers.
+Portfolio data lives in this browser or installed app's `localStorage`. Optional cloud sync stores a private copy through the Vercel API when configured. Use **Export JSON** / **Import JSON** in the app to back up or move data between browsers.
 
 ## Run locally
 
@@ -13,7 +13,23 @@ python3 -m http.server 8743
 
 ## Deploy
 
-Plain static site (no build step): `index.html`, `styles.css`, `app.js`. Deployable as-is on Vercel, Netlify, or GitHub Pages.
+Plain static site (no build step). Publish `index.html`, `styles.css`, `app.js`, `pwa.js`, `sw.js`, `manifest.webmanifest`, and the `icons/` directory together. The dashboard and PWA work on HTTPS static hosting, including Vercel, Netlify, or GitHub Pages. Cloud sync also needs the configured Vercel API; it is not available on a plain local/static server.
+
+## Install in the Mac Dock
+
+1. Open [My Funds](https://investment-portfolio-kohl.vercel.app/) in **Safari on macOS Sonoma 14 or later**. Export a backup from **Data & backup → Export JSON** first.
+2. Choose **File → Add to Dock**, name it **My Funds**, and click **Add**.
+3. Launch My Funds from the Dock. Safari gives it separate website storage. If it opens empty, use **Data & backup → Import JSON** to load the backup, or enter your existing cloud sync key in cloud sync settings.
+
+Chrome and Edge can also install it through their install app menu. The dashboard's **Install My Funds** button provides help and offers a native install prompt when the browser makes one available.
+
+Use the hosted HTTPS URL for everyday access. For local use, start the server above and always use exactly `http://localhost:8743/`; hostnames and ports have separate portfolio storage. Keep the server running for the installed app's first launch and for updates. The existing START HERE launcher chooses a new port when its default is busy, so avoid installing from a changing address.
+
+After the installed app has loaded online and finished offline setup, the dashboard and saved portfolio can reopen offline. Viewing, editing, and JSON backups work locally; cloud sync requires a connection. Offline changes remain local until a successful sync; the PWA does not add background sync. External fonts may fall back to system fonts offline. Browser data clearing or storage eviction can remove saved data and the offline cache; keep JSON backups.
+
+Updates download in the background. **Reload to update** appears when a new version is ready; finish open forms first. Other open windows are not forcibly reloaded. On every app-shell release, bump `VERSION` in `sw.js` and keep its `SHELL_FILES` URLs aligned with `index.html`. Only app assets are cached; API requests, sync credentials, and personal JSON files are excluded. Cache names are scoped to the installation path, so subdirectory hosting works without clearing other apps' caches.
+
+Safari installation reference: [Use Safari web apps on Mac](https://support.apple.com/en-us/104996).
 
 ## Dashboard views
 
@@ -27,6 +43,8 @@ Plain static site (no build step): `index.html`, `styles.css`, `app.js`. Deploya
 
 ```sh
 node --check app.js
-node --test tests/performance.test.js
+node --check pwa.js
+node --check sw.js
+node --test tests/*.test.js
 git diff --check
 ```

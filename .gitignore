@@ -4,10 +4,12 @@ corrected-*.json
 
 # Local preview screenshots (contain account values)
 *.png
+!icons/*.png
 
 # macOS / local tooling
 .DS_Store
 .claude/
+.playwright-cli/
 *.command
 .vercel/
 node_modules/

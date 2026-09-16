@@ -4,10 +4,17 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>My Mutual Fund Portfolio</title>
+    <meta name="theme-color" content="#f5f7fb" />
+    <meta name="application-name" content="My Funds" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="My Funds" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" type="image/svg+xml" href="./icons/icon.svg" />
+    <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="./styles.css?v=20260907a" />
+    <link rel="stylesheet" href="./styles.css?v=20260916c" />
   </head>
   <body>
     <div class="app-shell">
@@ -46,6 +53,11 @@
       </header>
 
       <main class="content">
+        <div class="pwa-notice" id="offlineNotice" role="status" hidden>Offline — you can view and edit this app’s saved portfolio. Cloud sync requires a connection.</div>
+        <div class="pwa-notice" id="updateNotice" role="status" hidden>
+          <span>A My Funds update is ready. Finish any open edits before reloading.</span>
+          <button class="ghost-button" id="applyUpdateButton" type="button">Reload to update</button>
+        </div>
         <section class="hero-card reveal">
           <div class="value-block primary-value">
             <span class="metric-label">Total Portfolio Value <span class="info-dot" tabindex="0" role="button" aria-label="What is Total Portfolio Value?" aria-describedby="tfv-tooltip">i<span class="info-tooltip" id="tfv-tooltip">Current value of mutual-fund holdings plus available Cash.</span></span></span>
@@ -84,6 +96,7 @@
                 <button class="action-tile secondary" data-action="Export JSON">Export JSON</button>
               </div>
             </details>
+            <button class="install-app-button" id="installAppButton" type="button" hidden>Install My Funds</button>
           </article>
 
           <article class="panel performance-panel reveal">
@@ -218,6 +231,22 @@
       </main>
     </div>
 
+    <dialog id="installDialog" class="action-dialog install-dialog" aria-labelledby="installTitle">
+      <form method="dialog">
+        <button class="dialog-close" aria-label="Close installation help">×</button>
+        <img class="install-app-icon" src="./icons/icon-192.png" alt="" width="64" height="64" />
+        <h2 id="installTitle">My Funds in your Dock</h2>
+        <p>Open your portfolio in its own window, with access to saved holdings even when you’re offline.</p>
+        <p id="installInstructions"><strong>Safari on Mac (macOS Sonoma 14 or later):</strong> choose File → Add to Dock, name it My Funds, then click Add. In Chrome or Edge, use the install app option in the address bar or browser menu.</p>
+        <p><strong>Bring your portfolio with you:</strong> use Data &amp; backup → Export JSON before installing. If the new app opens empty, choose Import JSON inside it, or enter your existing cloud sync key. Safari’s Dock app has separate storage.</p>
+        <p id="installAvailability" role="status">For reliable access, install from your usual HTTPS website. A local installation needs the same address and port; keep the local server running for the first launch and updates.</p>
+        <menu>
+          <button class="ghost-button">Done</button>
+          <button class="primary-button" id="nativeInstallButton" type="button" hidden>Install app</button>
+        </menu>
+      </form>
+    </dialog>
+
     <dialog id="insightDialog" class="action-dialog insight-dialog" aria-labelledby="insightTitle">
       <form method="dialog">
         <button class="dialog-close" aria-label="Close details">×</button>
@@ -246,5 +275,6 @@
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
     <script src="./app.js?v=20260906c"></script>
+    <script src="./pwa.js?v=20260916c" defer></script>
   </body>
 </html>
