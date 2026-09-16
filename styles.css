@@ -130,11 +130,12 @@ svg {
   position: sticky;
   top: 0;
   z-index: 4;
-  display: grid;
-  grid-template-columns: minmax(240px, 1fr) auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 24px;
   align-items: center;
-  height: 72px;
-  padding: 0 32px;
+  min-height: 72px;
+  padding: 12px 32px;
   border-bottom: 1px solid var(--line);
   background: color-mix(in srgb, var(--surface) 92%, transparent);
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.8) inset;
@@ -143,6 +144,7 @@ svg {
 
 .brand {
   display: inline-flex;
+  flex-shrink: 0;
   align-items: center;
   gap: 14px;
   text-decoration: none;
@@ -173,10 +175,20 @@ svg {
 
 .top-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
   gap: 14px;
-  min-width: 460px;
+  min-width: 0;
+  margin-left: auto;
+}
+
+.top-actions > * {
+  flex-shrink: 0;
+}
+
+.top-actions > button {
+  height: 38px;
 }
 
 .currency-button,
@@ -2574,12 +2586,7 @@ th[data-col].sort-desc::after {
 
 @media (max-width: 1780px) {
   .topbar {
-    grid-template-columns: minmax(240px, 1fr) auto;
-    padding: 0 24px;
-  }
-
-  .top-actions {
-    min-width: 390px;
+    padding-inline: 24px;
   }
 
   .content {
@@ -2593,21 +2600,7 @@ th[data-col].sort-desc::after {
 
 @media (max-width: 1500px) {
   .topbar {
-    grid-template-columns: 1fr;
-    height: auto;
-    gap: 12px;
-    padding: 14px 20px 0;
-  }
-
-  .brand {
-    justify-self: start;
-  }
-
-  .top-actions {
-    position: absolute;
-    top: 17px;
-    right: 20px;
-    min-width: 0;
+    padding-inline: 20px;
   }
 
   /* Fix 9: last-updated now hidden only at tablet widths; wider screens show it */
@@ -2714,7 +2707,7 @@ th[data-col].sort-desc::after {
   }
 
   .topbar {
-    padding: 12px 14px 0;
+    padding: 10px 14px;
   }
 
   .brand {
@@ -2727,9 +2720,7 @@ th[data-col].sort-desc::after {
   }
 
   .top-actions {
-    position: static;
     justify-content: flex-start;
-    flex-wrap: wrap;
     width: 100%;
   }
 
@@ -3229,8 +3220,6 @@ th[data-col].sort-desc::after {
 .insight-list li small { display: block; color: var(--muted); font-size: 11px; margin-top: 4px; }
 .insight-list li > span:last-child { white-space: nowrap; }
 @media (max-width: 1180px) {
-  .topbar { height: auto; min-height: 70px; display: flex; flex-wrap: wrap; gap: 12px; padding-bottom: 12px; }
-  .top-actions { position: static; margin-left: auto; flex-wrap: wrap; }
   .hero-card { grid-template-columns: 1fr; gap: 16px; }
   .metric-strip .value-block { border-top: 1px solid var(--line); padding: 14px 0 0; }
   .metric-strip { gap: 18px; }
@@ -3238,6 +3227,7 @@ th[data-col].sort-desc::after {
 @media (max-width: 760px) {
   .topbar { gap: 8px; padding-top: 10px; }
   .top-actions { gap: 6px; margin: 0; }
+  .top-actions > button, .date-control { height: 34px; }
   .date-control { padding: 5px 8px; gap: 5px; }
   .date-control svg { display: none; }
   .date-caption { font-size: 10px; }
