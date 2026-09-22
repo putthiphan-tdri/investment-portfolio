@@ -2875,7 +2875,8 @@ function transactionFundOptions(extra = []) {
   const base = state.action === "Edit Transaction"
     ? holdings.filter((item) => !isCashHolding(item)).map((item) => item.symbol)
     : activeFundHoldings().map((item) => item.symbol);
-  return [...new Set([...base, ...extra].filter(Boolean))];
+  return [...new Set([...base, ...extra].filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b, "en", { sensitivity: "base", numeric: true }));
 }
 
 // Build the order-dialog fields for a given order type. Switch swaps in its own
