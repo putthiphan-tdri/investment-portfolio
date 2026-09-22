@@ -81,6 +81,12 @@ html.reduce-motion *::after {
   white-space: nowrap;
 }
 
+.privacy-mode td.private-value::after {
+  top: 50%;
+  bottom: auto;
+  transform: translateY(-50%);
+}
+
 .privacy-mode .private-input {
   color: transparent !important;
   caret-color: transparent;
