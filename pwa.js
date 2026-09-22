@@ -80,11 +80,16 @@
     showUpdate();
     registration.addEventListener('updatefound', () => {
       const worker = registration.installing;
-      worker?.addEventListener('statechange', showUpdate);
+      worker?.addEventListener('statechange', () => {
+        // Safari may populate registration.waiting after the statechange event.
+        window.setTimeout(showUpdate, 0);
+      });
     });
+    window.setInterval(showUpdate, 1000);
     // Dock windows can remain open for days; check again when they regain focus.
     window.addEventListener('focus', () => {
-      if (navigator.onLine) registration.update().catch(() => {});
+      showUpdate();
+      if (navigator.onLine) registration.update().then(showUpdate).catch(() => {});
     });
   }).catch(() => {
     availability.textContent = 'Offline setup could not finish. Reconnect and reload the app before relying on offline access.';

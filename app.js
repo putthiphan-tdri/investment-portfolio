@@ -44,13 +44,23 @@ const currencyConfig = {
 const sortState = { col: "bank", dir: "asc" };
 const storageKey = "myFundsPortfolio.v1";
 
-function savePortfolio({ captureSnapshot = true } = {}) {
+function savePortfolio({ captureSnapshot = true, dataChanged = true } = {}) {
   try {
+    if (cloudState.stale) {
+      loadPortfolio();
+      renderAll();
+      showToast("Another tab changed the portfolio. Reopen your form before saving.");
+      return;
+    }
     if (captureSnapshot) syncTodaySnapshot();
     portfolioSnapshots.splice(0, portfolioSnapshots.length, ...normalizePortfolioSnapshots(portfolioSnapshots));
+    const previous = JSON.parse(localStorage.getItem(storageKey) || "{}");
+    const sync = previous.sync || { etag: null, dirty: false };
+    if (dataChanged) sync.dirty = true;
     localStorage.setItem(storageKey, JSON.stringify({
       version: 1,
-      savedAt: new Date().toISOString(),
+      savedAt: dataChanged ? new Date().toISOString() : previous.savedAt,
+      sync,
       currency: state.currency,
       logDate: activeDateKey(),
       privacyMode: state.privacyMode,
@@ -58,7 +68,7 @@ function savePortfolio({ captureSnapshot = true } = {}) {
       activities,
       portfolioSnapshots,
     }));
-    scheduleCloudPush();
+    if (dataChanged) scheduleCloudPush();
   } catch {
     showToast("Could not save changes in this browser.");
   }
@@ -68,24 +78,30 @@ function savePortfolio({ captureSnapshot = true } = {}) {
 // localStorage stays the working copy; the private blob is the durable one.
 // Reads/writes are authenticated with a sync key the user enters once.
 const CLOUD_KEY_STORAGE = "myFundsPortfolio.syncKey";
-const cloudState = { pushTimer: 0 };
+const cloudState = { pushTimer: 0, busy: false, stale: false, status: "Not checked yet" };
 
 function cloudKey() {
-  try {
-    return localStorage.getItem(CLOUD_KEY_STORAGE) || "";
-  } catch {
-    return "";
-  }
+  try { return localStorage.getItem(CLOUD_KEY_STORAGE) || ""; } catch { return ""; }
 }
 
-async function cloudRequest(method, body) {
-  if (!cloudKey()) return null;
+function cloudStatus(message) {
+  cloudState.status = message;
+  const button = document.querySelector("#cloudSyncButton");
+  if (button) button.title = `Cloud sync: ${message}`;
+  const label = document.querySelector("#cloudSyncStatus");
+  if (label) label.textContent = message;
+}
+
+function storedPortfolio() {
+  return JSON.parse(localStorage.getItem(storageKey) || "{}");
+}
+
+async function cloudRequest(method, body, headers = {}, key = cloudKey()) {
+  if (!key) return null;
   return fetch("/api/portfolio", {
-    method,
-    headers: {
-      Authorization: `Bearer ${cloudKey()}`,
-      ...(body ? { "Content-Type": "application/json" } : {}),
-    },
+    method, cache: "no-store",
+    headers: { Authorization: `Bearer ${key}`, ...headers,
+      ...(body ? { "Content-Type": "application/json" } : {}) },
     body: body ? JSON.stringify(body) : undefined,
   });
 }
@@ -93,56 +109,85 @@ async function cloudRequest(method, body) {
 function scheduleCloudPush() {
   if (!cloudKey()) return;
   window.clearTimeout(cloudState.pushTimer);
-  cloudState.pushTimer = window.setTimeout(pushPortfolioToCloud, 2500);
+  cloudStatus("Changes saved here; waiting to sync");
+  cloudState.pushTimer = window.setTimeout(() => pullPortfolioFromCloud(), 2500);
 }
 
-async function pushPortfolioToCloud() {
-  try {
-    const response = await cloudRequest("PUT", buildExportPayload());
-    if (response?.status === 401) showToast("Cloud sync key was rejected. Check it in cloud sync settings.");
-  } catch {
-    // Offline or running without the Vercel API (e.g. local python server) — stay quiet.
-  }
+function pushPortfolioToCloud() {
+  return pullPortfolioFromCloud();
 }
 
-async function pullPortfolioFromCloud({ silent = false } = {}) {
+// Reads never make a local copy newer. Every write is conditional on the exact
+// cloud version that this copy was based on; wall-clock timestamps are not locks.
+async function pullPortfolioFromCloud({ resolution = null } = {}) {
+  if (!cloudKey() || cloudState.busy) return;
+  if (!resolution && document.querySelector("dialog[open]")) return;
+  cloudState.busy = true;
+  const key = cloudKey();
+  const before = localStorage.getItem(storageKey);
   try {
-    const response = await cloudRequest("GET");
-    if (!response) return;
-
-    if (response.status === 404) {
-      if (holdings.length > 0) {
-        pushPortfolioToCloud();
-        if (!silent) showToast("No cloud copy yet — uploading this portfolio.");
-      }
+    cloudStatus("Checking cloud…");
+    const response = await cloudRequest("GET", undefined, {}, key);
+    if (key !== cloudKey() || before !== localStorage.getItem(storageKey)) return;
+    if (!response.ok && response.status !== 404) throw new Error(response.status === 401
+      ? "Sync key rejected. Check Cloud Sync settings." : "Cloud unavailable. Your local copy is safe; sync will retry.");
+    const remote = response.status === 404 ? null : await response.json();
+    const etag = remote ? response.headers.get("ETag") : null;
+    if (remote && (!Array.isArray(remote.holdings) || !etag)) throw new Error("Cloud response is incomplete. Reload after the app update.");
+    if (key !== cloudKey() || before !== localStorage.getItem(storageKey)) return;
+    if (!resolution && document.querySelector("dialog[open]")) return;
+    const local = storedPortfolio();
+    const sync = local.sync || { etag: null, dirty: false };
+    const hasLocal = (local.holdings?.length || local.activities?.length || local.portfolioSnapshots?.length);
+    const unlinked = !sync.etag && hasLocal;
+    const conflict = remote && (unlinked || (sync.dirty && sync.etag !== etag));
+    if (conflict && !resolution) {
+      cloudStatus("Copies differ. Open Cloud Sync to choose which copy to keep.");
       return;
     }
-
-    if (!response.ok) {
-      if (!silent) {
-        const detail = await response.json().catch(() => ({}));
-        showToast(detail.error || "Cloud sync is not ready yet.");
-      }
-      return;
-    }
-
-    const parsed = await response.json();
-    const stored = JSON.parse(localStorage.getItem(storageKey) || "{}");
-    const localSavedAt = stored.savedAt || "";
-    const cloudSavedAt = parsed.exportedAt || "";
-
-    if (cloudSavedAt > localSavedAt || holdings.length === 0) {
-      applyStoredPayload(parsed);
-      savePortfolio({ captureSnapshot: false });
+    if (resolution === "download" || (remote && !sync.dirty && !unlinked)) {
+      if (!remote) throw new Error("No cloud copy exists yet.");
+      if (sync.etag === etag && !resolution) { cloudStatus("Up to date"); return; }
+      // Retain a recovery copy before any replacement, including first migration.
+      if (hasLocal) localStorage.setItem(`${storageKey}.beforeCloudRestore`, JSON.stringify(local));
+      const preferences = { currency: state.currency, logDate: state.logDate, privacyMode: state.privacyMode };
+      applyStoredPayload(remote);
+      Object.assign(state, preferences);
+      localStorage.setItem(storageKey, JSON.stringify({ ...remote, ...preferences,
+        savedAt: remote.savedAt || remote.exportedAt, sync: { etag, dirty: false } }));
       applyPrivacyMode();
-      document.querySelector("#currencyLabel").textContent = state.currency;
       renderAll();
-      showToast("Portfolio loaded from cloud.");
-    } else {
-      pushPortfolioToCloud();
+      cloudStatus("Up to date");
+      return;
     }
-  } catch {
-    // Offline or no API available — local data keeps working.
+    if (!hasLocal && !sync.dirty) { cloudStatus("No portfolio to sync yet"); return; }
+    if (!sync.dirty && resolution !== "upload") {
+      cloudStatus(remote ? "Up to date" : "No cloud copy. Open Cloud Sync to upload this copy.");
+      return;
+    }
+    if (remote && sync.etag !== etag && resolution !== "upload") return;
+    const payload = { ...buildExportPayload(), savedAt: local.savedAt };
+    const result = await cloudRequest("PUT", payload,
+      remote ? { "If-Match": etag } : { "If-None-Match": "*" }, key);
+    if (key !== cloudKey()) return;
+    if (result.status === 409 || result.status === 412) {
+      cloudStatus("Cloud changed during sync. Open Cloud Sync to review both copies.");
+      return;
+    }
+    if (!result.ok) throw new Error(result.status === 401 ? "Sync key rejected. Check Cloud Sync settings." : "Upload failed. Your changes remain saved here; sync will retry.");
+    const receipt = await result.json();
+    if (key !== cloudKey()) return;
+    if (!receipt.etag) throw new Error("Cloud did not confirm the saved version. Your local changes are retained.");
+    const latest = storedPortfolio();
+    // Edits made while uploading stay dirty and are sent in the next round.
+    const changed = before !== localStorage.getItem(storageKey);
+    localStorage.setItem(storageKey, JSON.stringify({ ...latest, sync: { etag: receipt.etag, dirty: changed } }));
+    cloudStatus(changed ? "New changes waiting to sync" : "Up to date");
+    if (changed) scheduleCloudPush();
+  } catch (error) {
+    cloudStatus(error.message || "Offline. Changes remain saved here; sync will retry.");
+  } finally {
+    cloudState.busy = false;
   }
 }
 
@@ -155,7 +200,7 @@ function openCloudSyncDialog() {
 
   document.querySelector("#dialogTitle").textContent = "Cloud Sync";
   document.querySelector("#dialogCopy").textContent = cloudKey()
-    ? "Cloud sync is on. The portfolio is stored as a private blob on Vercel and loads on any device with this key. Clear the key to turn sync off."
+    ? "Sync checks when you return to the app and every 30 seconds while open. If copies differ, export backups before choosing the copy to keep. Clear the key to turn sync off."
     : "Enter your sync key to store the portfolio as a private blob on Vercel and load it on any device.";
   document.querySelector("#confirmAction").textContent = "Save";
   document.querySelector("#deleteFund").hidden = true;
@@ -164,6 +209,25 @@ function openCloudSyncDialog() {
     { id: "syncKeyInput", label: "Sync key", value: cloudKey() },
   ]);
 
+  const status = document.createElement("p");
+  status.id = "cloudSyncStatus";
+  status.textContent = cloudState.status;
+  fields.append(status);
+  for (const [label, resolution] of [["Load cloud copy", "download"], ["Use this device’s copy for cloud", "upload"]]) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "ghost-button";
+    button.textContent = label;
+    button.addEventListener("click", () => {
+      if (!cloudKey()) { cloudStatus("Save your sync key first."); return; }
+      if (!window.confirm(resolution === "download"
+        ? "Replace this device’s portfolio with the cloud copy? A local recovery copy will be kept."
+        : "Make this device’s portfolio the shared cloud copy? Export a backup of both copies first.")) return;
+      dialog.close();
+      pullPortfolioFromCloud({ resolution });
+    });
+    fields.append(button);
+  }
   if (dialog.showModal) dialog.showModal();
 }
 
@@ -3114,6 +3178,10 @@ function openActionDialog(action) {
 
 function handleConfirm(event) {
   event.preventDefault();
+  if (cloudState.stale) {
+    showToast("Another tab changed the portfolio. Close and reopen this form before saving.");
+    return;
+  }
   const dialog = document.querySelector("#actionDialog");
   const getValue = (id) => document.querySelector(`#${id}`)?.value.trim() || "";
   const isChecked = (id) => Boolean(document.querySelector(`#${id}`)?.checked);
@@ -3465,9 +3533,13 @@ function handleConfirm(event) {
     const key = getValue("syncKeyInput");
     try {
       if (key) {
+        if (key !== cloudKey()) {
+          const local = storedPortfolio();
+          localStorage.setItem(storageKey, JSON.stringify({ ...local, sync: { etag: null, dirty: false } }));
+        }
         localStorage.setItem(CLOUD_KEY_STORAGE, key);
         showToast("Cloud sync enabled. Checking for a stored portfolio…");
-        pullPortfolioFromCloud();
+        window.setTimeout(() => pullPortfolioFromCloud(), 0);
       } else {
         localStorage.removeItem(CLOUD_KEY_STORAGE);
         showToast("Cloud sync turned off. Data stays in this browser only.");
@@ -3506,6 +3578,10 @@ function deleteEditingActivity() {
 }
 
 function handleDeleteDialogAction() {
+  if (cloudState.stale) {
+    showToast("Another tab changed the portfolio. Close and reopen this form before deleting.");
+    return;
+  }
   if (state.action === "Edit Transaction") {
     deleteEditingActivity();
     return;
@@ -3723,7 +3799,7 @@ function bindInteractions() {
       const requestedDate = logDateInput.value;
       state.logDate = previousWeekdayKey(requestedDate);
       state.calendarMonth = monthKeyFromDate(state.logDate);
-      savePortfolio({ captureSnapshot: false });
+      savePortfolio({ captureSnapshot: false, dataChanged: false });
       renderAll();
       showToast(isWeekendDate(requestedDate)
         ? `Weekend logs are blocked. Log date moved to ${readableDate(state.logDate)}.`
@@ -3734,7 +3810,7 @@ function bindInteractions() {
   document.querySelector("#currencyButton").addEventListener("click", () => {
     state.currency = state.currency === "THB" ? "USD" : "THB";
     document.querySelector("#currencyLabel").textContent = state.currency;
-    savePortfolio({ captureSnapshot: false });
+    savePortfolio({ captureSnapshot: false, dataChanged: false });
     renderAll();
     const flipTargets = document.querySelectorAll(".primary-value strong, #pnlAmount, #availableCash, #pnlPercent, #dayChange, #dayChangePct, .donut-center strong");
     flipTargets.forEach((el) => el.classList.remove("value-flip"));
@@ -3770,7 +3846,7 @@ function bindInteractions() {
   if (privacyBtn) {
     privacyBtn.addEventListener("click", () => {
       state.privacyMode = !state.privacyMode;
-      savePortfolio({ captureSnapshot: false });
+      savePortfolio({ captureSnapshot: false, dataChanged: false });
       applyPrivacyMode();
       renderAll();
       showToast(state.privacyMode ? "Investment figures hidden. Percentages stay visible." : "Investment figures visible.");
@@ -3787,8 +3863,36 @@ loadPortfolio();
 loadViewPreferences();
 document.querySelector("#currencyLabel").textContent = state.currency;
 applyPrivacyMode();
-savePortfolio({ captureSnapshot: false });
 bindInteractions();
-window.addEventListener("beforeunload", () => savePortfolio({ captureSnapshot: false }));
 renderAll();
 pullPortfolioFromCloud({ silent: true });
+
+window.addEventListener("focus", () => pullPortfolioFromCloud());
+window.addEventListener("online", () => pullPortfolioFromCloud());
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) pullPortfolioFromCloud();
+});
+window.setInterval(() => {
+  if (!document.hidden) pullPortfolioFromCloud();
+}, 30000);
+// Two tabs in the same browser share storage. Refresh their in-memory copy too.
+window.addEventListener("storage", (event) => {
+  if (event.key !== storageKey) return;
+  if (document.querySelector("dialog[open]")) {
+    cloudState.stale = true;
+    cloudStatus("Another tab changed the portfolio. Close this form before editing.");
+    return;
+  }
+  loadPortfolio();
+  applyPrivacyMode();
+  renderAll();
+});
+
+document.querySelector("#actionDialog").addEventListener("close", () => {
+  if (cloudState.stale) {
+    cloudState.stale = false;
+    loadPortfolio();
+    applyPrivacyMode();
+    renderAll();
+  }
+});

@@ -1,4 +1,4 @@
-import { put, list, get } from "@vercel/blob";
+import { put, get } from "@vercel/blob";
 
 // The portfolio lives as a single private blob. Reads and writes both go
 // through this function, authenticated with the PORTFOLIO_KEY env var, so the
@@ -24,6 +24,7 @@ export default async function handler(req, res) {
   // inject BLOB_STORE_ID and the SDK authenticates via Vercel's runtime
   // identity (OIDC) with no static token. Support both: pass the token only
   // when one exists, otherwise let the SDK resolve credentials itself.
+  res.setHeader("Cache-Control", "no-store");
   const token = blobToken();
   const blobOptions = token ? { token } : {};
 
@@ -47,27 +48,12 @@ export default async function handler(req, res) {
 
   try {
     if (req.method === "GET") {
-      // get() by pathname works with both auth models; fall back to resolving
-      // the blob URL via list() for older SDK behaviors.
-      let result = await get(BLOB_PATH, { access: "private", ...blobOptions }).catch(() => null);
-
-      if (!result) {
-        const { blobs } = await list({ prefix: BLOB_PATH, ...blobOptions });
-        const blob = blobs.find((item) => item.pathname === BLOB_PATH);
-
-        if (!blob) {
-          res.status(404).json({ error: "No portfolio stored yet." });
-          return;
-        }
-
-        result = await get(blob.url, { access: "private", ...blobOptions }).catch(() => null);
-      }
-
+      const result = await get(BLOB_PATH, { access: "private", useCache: false, ...blobOptions });
       if (!result) {
         res.status(404).json({ error: "No portfolio stored yet." });
         return;
       }
-
+      res.setHeader("ETag", result.blob.etag);
       const payload = await new Response(result.stream).text();
       res.setHeader("Content-Type", "application/json");
       res.setHeader("Cache-Control", "no-store");
@@ -90,21 +76,32 @@ export default async function handler(req, res) {
         return;
       }
 
-      await put(BLOB_PATH, JSON.stringify(parsed), {
+      const expected = req.headers["if-match"];
+      const createOnly = req.headers["if-none-match"] === "*";
+      if ((!expected || expected === "*") && !createOnly) {
+        res.status(428).json({ error: "Reload to update the app before syncing. This version cannot safely upload." });
+        return;
+      }
+      const saved = await put(BLOB_PATH, JSON.stringify(parsed), {
         access: "private",
-        allowOverwrite: true,
+        allowOverwrite: !createOnly,
+        ...(createOnly ? {} : { ifMatch: expected }),
         addRandomSuffix: false,
         contentType: "application/json",
         ...blobOptions,
       });
 
-      res.status(200).json({ ok: true, savedAt: new Date().toISOString() });
+      res.status(200).json({ ok: true, etag: saved.etag, savedAt: new Date().toISOString() });
       return;
     }
 
     res.setHeader("Allow", "GET, PUT, POST");
     res.status(405).json({ error: "Method not allowed" });
   } catch (error) {
-    res.status(500).json({ error: `Blob operation failed: ${error.message}` });
+    if (["BlobPreconditionFailedError", "BlobAlreadyExistsError"].includes(error.constructor?.name)) {
+      res.status(409).json({ error: "Cloud copy has changed. Review both copies before syncing." });
+      return;
+    }
+    res.status(503).json({ error: "Cloud storage is unavailable. Your local copy is unchanged." });
   }
 }

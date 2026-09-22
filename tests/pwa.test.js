@@ -77,7 +77,8 @@ test('complete shell is precached and reopens offline from a subdirectory with q
   for (const path of ['', '?source=dock', 'index.html?source=dock']) {
     assert.equal(await sw.request(`https://example.com/funds/${path}`, { mode: 'navigate' }), 'cached:https://example.com/funds/index.html');
   }
-  assert.equal(await sw.request('https://example.com/funds/app.js?v=20260906c'), 'cached:https://example.com/funds/app.js?v=20260906c');
+  const appURL = urls.find(url => new URL(url).pathname.endsWith('/app.js'));
+  assert.equal(await sw.request(appURL), `cached:${appURL}`);
   assert.equal(sw.fetched.length, 0);
 });
 
