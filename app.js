@@ -471,7 +471,7 @@ function normalizedActivityKey(activity) {
   const amountKey = Number(activity.amount || 0).toFixed(2);
   const grossKey = Number(activity.grossAmount || 0).toFixed(2);
   const taxKey = Number(activity.taxAmount || 0).toFixed(2);
-  const netKey = Number(activity.netAmount || 0).toFixed(2);
+  const netKey = Number(activity.netAmount ?? activity.amount ?? 0).toFixed(2);
   const cashKey = Number(activity.cashAmount || 0).toFixed(2);
   const cashBasisKey = Number(activity.cashBasisAmount || 0).toFixed(2);
   const cashBankKey = String(activity.cashBank || "");
@@ -491,7 +491,9 @@ function normalizedActivityKey(activity) {
     activity.createdAt || "",
     activity.type || "",
     activity.asset || "",
-    String(activity.units || "").replace(/^\+/, "").trim(),
+    Number.isFinite(Number(String(activity.units || "").replace(/[,+]/g, "")))
+      ? String(Number(String(activity.units || "").replace(/[,+]/g, "")))
+      : String(activity.units || "").trim(),
     amountKey,
     grossKey,
     taxKey,
@@ -509,11 +511,32 @@ function normalizedActivityKey(activity) {
 function dedupeActivities(list) {
   const seen = new Set();
   return list.filter((activity) => {
-    const key = normalizedActivityKey(activity);
+    // Separate orders may have identical values. Only a repeated ID is certain.
+    const key = activity.id || normalizedActivityKey(activity);
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
   });
+}
+
+function mergeImportedActivities(existing, incoming) {
+  const remaining = normalizeActivities(existing);
+  const merged = dedupeActivities(normalizeActivities(incoming));
+  // Match each incoming order once, preserving repeated legitimate orders.
+  // The fallback recognizes IDs rewritten by older imports, with the original
+  // timestamp intact. Same-ID corrections always take priority over content.
+  const unmatched = merged.filter((item) => {
+    const index = remaining.findIndex((old) => old?.id === item.id);
+    if (index < 0) return true;
+    remaining[index] = null;
+    return false;
+  });
+  unmatched.forEach((item) => {
+    const key = normalizedActivityKey(item);
+    const legacyIndex = remaining.findIndex((old) => old && normalizedActivityKey(old) === key);
+    if (legacyIndex >= 0) remaining[legacyIndex] = null;
+  });
+  return dedupeActivities([...merged, ...remaining.filter(Boolean)]);
 }
 
 function dedupeCashHoldings(list) {
@@ -2535,9 +2558,37 @@ function importSampleData() {
     return false;
   }
 
+  const restore = document.querySelector("#jsonImportMode")?.value === "Restore full portfolio";
+  if (!parsed || typeof parsed !== "object") {
+    showToast("Import JSON must contain a portfolio object or a fund list.");
+    return false;
+  }
   const importedHoldings = Array.isArray(parsed) ? parsed : parsed.holdings || parsed.funds || [];
   const importedActivities = parsed.activities || [];
-  const importedSnapshots = normalizePortfolioSnapshots(parsed.portfolioSnapshots || parsed.snapshots || []);
+  const snapshotInput = parsed.portfolioSnapshots || parsed.snapshots || [];
+  if (![importedHoldings, importedActivities, snapshotInput].every((list) =>
+    Array.isArray(list) && list.every((item) => item && typeof item === "object" && !Array.isArray(item)))) {
+    showToast("Holdings, activities, and snapshots must be lists of records.");
+    return false;
+  }
+  if (restore && (!Array.isArray(parsed.holdings) || !Array.isArray(parsed.activities)
+      || !Array.isArray(parsed.portfolioSnapshots || parsed.snapshots))) {
+    showToast("Restore needs a full backup with holdings, activities, and snapshots. Use Merge for partial files.");
+    return false;
+  }
+  const importedSnapshots = normalizePortfolioSnapshots(snapshotInput);
+  try {
+    const before = localStorage.getItem(storageKey);
+    if (before) localStorage.setItem(`${storageKey}.beforeJsonImport`, before);
+  } catch {
+    showToast("Could not save a recovery copy. Import cancelled; export a backup and free browser storage first.");
+    return false;
+  }
+  if (restore) {
+    holdings.splice(0, holdings.length);
+    activities.splice(0, activities.length);
+    portfolioSnapshots.splice(0, portfolioSnapshots.length);
+  }
   if (/^\d{4}-\d{2}-\d{2}$/.test(parsed.logDate || "")) {
     state.logDate = parsed.logDate;
     state.calendarMonth = monthKeyFromDate(state.logDate);
@@ -2596,11 +2647,9 @@ function importSampleData() {
     }
   });
 
-  normalizeActivities(importedActivities).forEach((item) => {
-    activities.unshift({ ...item, id: makeId("activity") });
-  });
+  activities.splice(0, activities.length, ...mergeImportedActivities(activities, importedActivities));
 
-  if (importedHoldings.length > 0 && importedActivities.length === 0) {
+  if (!restore && importedHoldings.length > 0 && importedActivities.length === 0) {
     activities.unshift({
       id: makeId("activity"),
       date: readableDate(activeDateKey()),
@@ -2625,7 +2674,8 @@ function importSampleData() {
 
   savePortfolio({ captureSnapshot: false });
   renderAll();
-  showToast(`Imported ${importedHoldings.length} fund${importedHoldings.length === 1 ? "" : "s"} from JSON.`);
+  showToast(restore ? `Portfolio restored with ${activities.length} activity records. Recovery copy saved.`
+    : `Imported ${importedHoldings.length} fund${importedHoldings.length === 1 ? "" : "s"} from JSON.`);
   return true;
 }
 
@@ -3135,7 +3185,7 @@ function openActionDialog(action) {
   document.querySelector("#dialogCopy").textContent = {
     "Add Asset": "Add a mutual fund, or choose Cash as the category to record available cash without fund-only fields.",
     "Add Transaction": "Record a buy, sell, switch, dividend, deposit, withdrawal, or transfer. New dividends and sell proceeds move into Cash.",
-    "Import Data": "Paste mutual-fund JSON to merge it into the portfolio.",
+    "Import Data": "Merge adds or updates records. Restore replaces all holdings, activity, and snapshots with a full backup—use it for a corrected portfolio. A recovery copy is saved before importing.",
   }[action] || "This workflow is ready.";
   fields.className = "dialog-fields";
 
@@ -3149,6 +3199,13 @@ function openActionDialog(action) {
     bindOrderFormHelpers();
   } else if (action === "Import Data") {
     fields.innerHTML = fieldMarkup([
+      {
+        id: "jsonImportMode",
+        label: "Import method",
+        kind: "select",
+        options: ["Merge records", "Restore full portfolio"],
+        value: "Merge records",
+      },
       {
         id: "jsonFileInput",
         label: "Upload JSON file",

@@ -38,6 +38,7 @@ Safari installation reference: [Use Safari web apps on Mac](https://support.appl
 - **Overview / Detailed** controls holdings density. On mobile, **Show details** expands one holding. Select a fund name or P&L contribution to inspect its NAV and transaction history.
 - Select a bank summary to filter holdings, or a calendar day to inspect its saved totals and transactions.
 - **Data & backup** contains JSON import/export. **Latest log** returns the log date to the most recent saved snapshot (or the latest weekday when there are no snapshots).
+- JSON import defaults to **Merge records**, preserving order IDs and applying same-ID corrections. For a corrected full backup, select **Restore full portfolio** to replace holdings, activity, and snapshots, including removing records absent from the backup. The previous browser payload is saved under `myFundsPortfolio.v1.beforeJsonImport`. Restore uses the backup's balances without replaying transactions; distinct orders are retained even when their amounts match.
 
 ## Checks
 
