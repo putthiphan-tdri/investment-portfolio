@@ -1408,7 +1408,7 @@ function renderHoldings() {
     <tr data-symbol="${htmlAttr(item.symbol)}" class="cash-row">
       <td data-label="Fund">
         <div class="asset-cell">
-          <span class="asset-name"><strong>${CASH_SYMBOL}</strong><span>${item.name}</span></span>
+          <span class="asset-name"><strong>${CASH_SYMBOL}</strong><span>${item.name}</span><small class="holding-mobile-meta">${htmlAttr(item.bank)} · ${htmlAttr(item.port)}</small></span>
         </div>
       </td>
       <td data-label="Bank / Port"><strong>${item.bank}</strong><span class="cell-note">${item.port}</span></td>
@@ -1418,7 +1418,7 @@ function renderHoldings() {
       <td data-label="Buying NAV">N/A</td>
       <td data-label="Daily NAV %"><span class="neutral">0.00%</span></td>
       <td data-label="Current NAV">N/A</td>
-      <td class="private-value" data-label="Current Value">${money(item.currentValue)}</td>
+      <td data-label="Current Value"><span class="private-value">${money(item.currentValue)}</span></td>
       <td data-label="P&L">N/A</td>
       <td class="${item.pnlPct >= 0 ? "green" : "red"}" data-label="P&L (%)">${pct(item.pnlPct)}</td>
       <td data-label="">
@@ -1432,7 +1432,7 @@ function renderHoldings() {
     <tr data-symbol="${item.symbol}">
       <td data-label="Fund">
         <div class="asset-cell">
-          <span class="asset-name"><strong>${item.symbol}${item.navCurrency && item.navCurrency !== "THB" ? ` <span class="ccy-chip" title="NAV in ${item.navCurrency}, valued at ${nav(item.fxRate)} THB/${item.navCurrency}">${item.navCurrency}</span>` : ""}</strong><span>${item.name}</span></span>
+          <span class="asset-name"><strong>${item.symbol}${item.navCurrency && item.navCurrency !== "THB" ? ` <span class="ccy-chip" title="NAV in ${item.navCurrency}, valued at ${nav(item.fxRate)} THB/${item.navCurrency}">${item.navCurrency}</span>` : ""}</strong><span>${item.name}</span><small class="holding-mobile-meta">${htmlAttr(item.bank)} · ${htmlAttr(item.port)}</small></span>
         </div>
       </td>
       <td data-label="Bank / Port"><strong>${item.bank}</strong><span class="cell-note">${item.port}</span></td>
@@ -1456,8 +1456,8 @@ function renderHoldings() {
           <input class="fund-value-input private-input" type="text" inputmode="decimal" value="${money(item.currentValue)}" data-symbol="${item.symbol}" title="Type the value shown in your bank app. The FX rate (currently ${nav(item.fxRate)} THB/${item.navCurrency}) is derived automatically." aria-label="${item.symbol} current value in ${state.currency}" />
         </span>
       </td>` : `
-      <td class="private-value" data-label="Current Value">${money(item.currentValue)}</td>`}
-      <td class="private-value ${item.pnlBaht >= 0 ? "green" : "red"}" data-label="P&L">${money(item.pnlBaht)}</td>
+      <td data-label="Current Value"><span class="private-value">${money(item.currentValue)}</span></td>`}
+      <td class="holding-return ${item.pnlBaht >= 0 ? "green" : "red"}" data-label="P&L"><span class="private-value">${money(item.pnlBaht)}</span><small class="holding-mobile-return">${pct(item.pnlPct)}</small></td>
       <td class="${item.pnlPct >= 0 ? "green" : "red"}" data-label="P&L (%)">${pct(item.pnlPct)}</td>
       <td data-label="">
         <button class="table-action-button" type="button" data-edit-fund="${item.symbol}" aria-label="Edit ${item.symbol}">
@@ -1468,7 +1468,7 @@ function renderHoldings() {
     </tr>
   `).join("") + `
     <tr class="total-row">
-      <td>Total</td>
+      <td>Total<span class="holding-mobile-meta">${sorted.length} visible asset${sorted.length === 1 ? "" : "s"}</span></td>
       <td></td>
       <td>${sorted.length} assets</td>
       <td class="private-value">${money(total.paid)}</td>
@@ -1476,8 +1476,8 @@ function renderHoldings() {
       <td></td>
       <td></td>
       <td></td>
-      <td class="private-value">${money(total.fundValue)}</td>
-      <td class="private-value ${total.pnl >= 0 ? "green" : "red"}">${money(total.pnl)}</td>
+      <td data-label="Current value"><span class="private-value">${money(total.fundValue)}</span></td>
+      <td data-label="Unrealized P&L" class="${total.pnl >= 0 ? "green" : "red"}"><span class="private-value">${money(total.pnl)}</span><small class="holding-mobile-return">${pct(total.pnlPct)}</small></td>
       <td class="${total.pnlPct >= 0 ? "green" : "red"}">${pct(total.pnlPct)}</td>
       <td></td>
     </tr>
@@ -1491,6 +1491,19 @@ function renderHoldings() {
       th.classList.add(sortState.dir === "asc" ? "sort-asc" : "sort-desc");
     }
   });
+
+  const mobileSort = document.querySelector("#holdingSort");
+  if (mobileSort) {
+    const selectedSort = `${sortState.col}:${sortState.dir}`;
+    mobileSort.value = selectedSort;
+    if (!mobileSort.value) {
+      const option = new Option("Custom table order", selectedSort);
+      option.dataset.custom = "true";
+      mobileSort.querySelectorAll("[data-custom]").forEach((item) => item.remove());
+      mobileSort.add(option);
+      mobileSort.value = selectedSort;
+    }
+  }
 
   document.querySelector(".holdings-panel").classList.toggle("holdings-overview", state.holdingsView === "overview");
   document.querySelectorAll("[data-holdings-view]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.holdingsView === state.holdingsView)));
@@ -1518,6 +1531,16 @@ function renderHoldings() {
       button.setAttribute("aria-label", `${expanded ? "Hide" : "Show"} details for ${row.dataset.symbol}`);
     });
     row.lastElementChild.prepend(button);
+    const fund = sorted.find((item) => item.symbol === row.dataset.symbol);
+    const note = document.createElement("span");
+    note.className = "holding-mobile-day";
+    if (row.classList.contains("cash-row")) {
+      note.textContent = "Available to invest";
+    } else {
+      note.innerHTML = `Daily NAV <b class="${fund.dailyChangePct < 0 ? "red" : fund.dailyChangePct > 0 ? "green" : "neutral"}">${pct(fund.dailyChangePct)}</b>`;
+      note.title = `NAV date: ${navDateCaption(fund)}`;
+    }
+    row.lastElementChild.prepend(note);
   });
 
   body.querySelectorAll(".nav-change-input").forEach((input) => {
@@ -3898,6 +3921,13 @@ function bindInteractions() {
       }
       renderHoldings();
     });
+  });
+
+  document.querySelector("#holdingSort")?.addEventListener("change", (event) => {
+    const [col, dir] = event.target.value.split(":");
+    sortState.col = col;
+    sortState.dir = dir;
+    renderHoldings();
   });
 
   const privacyBtn = document.querySelector("#privacyToggle");

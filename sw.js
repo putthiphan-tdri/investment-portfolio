@@ -1,13 +1,13 @@
 // Bump this version whenever the app shell changes, including index.html/app.js/styles.css.
-const VERSION = '20260923a';
+const VERSION = '20260923b';
 const CACHE_PREFIX = `my-funds-shell-${encodeURIComponent(self.registration.scope)}-`;
 const CACHE_NAME = `${CACHE_PREFIX}${VERSION}`;
 const SHELL_FILES = [
   './',
   './index.html',
-  './styles.css?v=20260923a',
-  './app.js?v=20260923a',
-  './pwa.js?v=20260923a',
+  './styles.css?v=20260923b',
+  './app.js?v=20260923b',
+  './pwa.js?v=20260923b',
   './manifest.webmanifest',
   './icons/icon.svg',
   './icons/icon-192.png',
