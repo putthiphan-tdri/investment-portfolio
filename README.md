@@ -34,7 +34,7 @@ Safari installation reference: [Use Safari web apps on Mac](https://support.appl
 ## Dashboard views
 
 - The top bar links to **Overview / Holdings / Activity / Insights** and keeps **Add order** in reach; on phones these move to a bottom bar with Add order in the middle. **Add fund** is on the holdings panel.
-- **Value / P&L / Daily P&L** switches the main chart. P&L is the unrealized balance of holdings at each date; it excludes realized gains and dividends. Daily P&L uses recorded daily NAV movement and leaves missing observations blank.
+- **Value / P&L / Daily P&L** switches the main chart. When the portfolio has a capital anchor (`capitalAnchor` in the saved data), P&L is total P&L: value minus **capital invested**. Only money entering or leaving moves capital: buys not paid from cash, sells not deposited to cash, deposits and withdrawals. Sells into cash, cash-funded buys, switches and dividends kept as cash change P&L, not capital. Without an anchor, P&L is the unrealized balance of holdings (value minus their cost). The hero's **Unrealized P&L** always uses holdings cost. Daily P&L uses recorded daily NAV movement and leaves missing observations blank.
 - Chart and holdings view preferences are remembered in this browser. Focus the chart's latest point and use arrow keys to explore dates; Escape closes the tooltip.
 - **Overview / Detailed** controls holdings density. On mobile, **Show details** expands one holding. Select a fund name or P&L contribution to inspect its NAV and transaction history.
 - Select a bank summary to filter holdings, or a calendar day to inspect its saved totals and transactions.

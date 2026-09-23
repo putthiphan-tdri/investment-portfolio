@@ -34,6 +34,9 @@ const state = {
   privacyMode: false,
   chartMode: "pnl",
   holdingsView: "overview",
+  // { date, amount }: capital invested as of `date`. Later capital flows are added
+  // on top, so internal moves (sells into cash, cash buys, switches) never shift it.
+  capitalAnchor: null,
 };
 
 const currencyConfig = {
@@ -67,6 +70,7 @@ function savePortfolio({ captureSnapshot = true, dataChanged = true } = {}) {
       holdings,
       activities,
       portfolioSnapshots,
+      ...(state.capitalAnchor ? { capitalAnchor: state.capitalAnchor } : {}),
     }));
     if (dataChanged) scheduleCloudPush();
   } catch {
@@ -246,6 +250,7 @@ function applyStoredPayload(parsed) {
   portfolioSnapshots.splice(0, portfolioSnapshots.length, ...normalizePortfolioSnapshots(parsed.portfolioSnapshots || parsed.snapshots || []));
   if (parsed.currency && currencyConfig[parsed.currency]) state.currency = parsed.currency;
   if ("privacyMode" in parsed) state.privacyMode = Boolean(parsed.privacyMode);
+  state.capitalAnchor = normalizeCapitalAnchor(parsed.capitalAnchor);
   repairBGlobalTreasurySwitch();
   dedupePortfolioRecords();
 }
@@ -1025,16 +1030,50 @@ function normalizePortfolioSnapshots(snapshots) {
   return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
 }
 
+function normalizeCapitalAnchor(anchor) {
+  const date = String(anchor?.date || "");
+  const amount = Number(anchor?.amount);
+  return /^\d{4}-\d{2}-\d{2}$/.test(date) && Number.isFinite(amount) ? { date, amount } : null;
+}
+
+// Money entering or leaving the portfolio. Sells into cash, cash-funded buys,
+// switches, and dividends kept as cash stay inside it and move P&L, not capital.
+function capitalFlowForActivity(activity) {
+  const amount = Number(activity.amount || 0);
+  if (activity.type === "Deposit") return amount;
+  if (activity.type === "Withdraw") return -amount;
+  if (activity.type === "Buy" && !activity.fromCash) return amount;
+  if (activity.type === "Sell" && !activity.depositedToCash) return -amount;
+  return 0;
+}
+
+function hasCapitalTracking() {
+  return Boolean(state.capitalAnchor);
+}
+
+// Capital invested at the end of `date`, or null for portfolios still on the
+// older cost-of-holdings basis (no anchor recorded).
+function capitalOn(date) {
+  const anchor = state.capitalAnchor;
+  if (!anchor) return null;
+  return activities.reduce((sum, activity) => {
+    const activityDate = previousWeekdayKey(dateKeyFromActivityDate(activity.date));
+    return activityDate > anchor.date && activityDate <= date ? sum + capitalFlowForActivity(activity) : sum;
+  }, anchor.amount);
+}
+
 function currentSnapshot(date = activeDateKey()) {
   const total = totals();
   const dayPnlDelta = total.fundValue - total.baseFundValue;
   const dayPnlDeltaPct = total.baseFundValue > 0 ? (dayPnlDelta / total.baseFundValue) * 100 : 0;
+  const totalPaid = capitalOn(date) ?? total.paid;
+  const pnl = total.fundValue - totalPaid;
   return {
     date,
     totalFundValue: total.fundValue,
-    totalPaid: total.paid,
-    pnl: total.pnl,
-    pnlPct: total.pnlPct,
+    totalPaid,
+    pnl,
+    pnlPct: totalPaid > 0 ? (pnl / totalPaid) * 100 : 0,
     dayPnlDelta,
     dayPnlDeltaPct,
   };
@@ -2088,9 +2127,9 @@ function bindPerformanceChartTooltip(svg) {
     const tone = amount > 0 ? "green" : amount < 0 ? "red" : "neutral";
     tooltip.innerHTML = `
       <strong>${htmlAttr(readableDate(point.dataset.date))}</strong>
-      <div class="chart-tooltip-row"><span>${state.chartMode === "value" ? "Portfolio value" : state.chartMode === "pnl" ? "Unrealized P&L" : "Daily P&L"}</span><b class="${state.chartMode === "value" ? "" : tone}">${state.chartMode === "value" ? (state.privacyMode ? "••••" : money(amount)) : privateMoney(amount)}</b></div>
-      ${state.chartMode !== "daily" ? `<div class="chart-tooltip-row"><span>${state.chartMode === "pnl" ? "P&L (%)" : "Unrealized P&L"}</span><b>${state.chartMode === "pnl" ? "" : privateMoney(Number(point.dataset.pnl)) + " · "}${Number(point.dataset.pnlPct).toFixed(2)}%</b></div>` : ""}
-      ${state.chartMode === "value" ? `<div class="chart-tooltip-row"><span>Cost basis</span><b>${state.privacyMode ? "••••" : money(Number(point.dataset.cost))}</b></div>` : ""}
+      <div class="chart-tooltip-row"><span>${state.chartMode === "value" ? "Portfolio value" : state.chartMode === "pnl" ? chartLabels().pnl : "Daily P&L"}</span><b class="${state.chartMode === "value" ? "" : tone}">${state.chartMode === "value" ? (state.privacyMode ? "••••" : money(amount)) : privateMoney(amount)}</b></div>
+      ${state.chartMode !== "daily" ? `<div class="chart-tooltip-row"><span>${state.chartMode === "pnl" ? "P&L (%)" : chartLabels().pnl}</span><b>${state.chartMode === "pnl" ? "" : privateMoney(Number(point.dataset.pnl)) + " · "}${Number(point.dataset.pnlPct).toFixed(2)}%</b></div>` : ""}
+      ${state.chartMode === "value" ? `<div class="chart-tooltip-row"><span>${chartLabels().cost}</span><b>${state.privacyMode ? "••••" : money(Number(point.dataset.cost))}</b></div>` : ""}
       ${state.chartMode === "pnl" ? `<div class="chart-tooltip-row"><span>Daily P&L</span><b>${daily === null ? "Not recorded" : privateMoney(daily)}</b></div>` : ""}
       ${point.dataset.source ? `<small>Last recorded ${htmlAttr(readableDate(point.dataset.source))}; carried forward.</small>` : ""}`;
     tooltip.hidden = false;
@@ -2118,19 +2157,28 @@ function bindPerformanceChartTooltip(svg) {
   });
 }
 
+function chartLabels() {
+  return hasCapitalTracking()
+    ? { pnl: "Total P&L", cost: "Capital invested" }
+    : { pnl: "Unrealized P&L", cost: "Cost basis" };
+}
+
 function renderChart(range = "1W") {
   const svg = document.querySelector("#performanceChart");
   const insights = document.querySelector("#chartInsights");
   const mode = state.chartMode;
-  const name = mode === "value" ? "Portfolio value" : mode === "daily" ? "Daily P&L" : "Unrealized P&L";
+  const seriesLabels = chartLabels();
+  const name = mode === "value" ? "Portfolio value" : mode === "daily" ? "Daily P&L" : seriesLabels.pnl;
   const description = mode === "value"
-    ? "Holdings and cash versus cost basis. Changes can include money added or withdrawn."
+    ? `Holdings and cash versus ${seriesLabels.cost.toLowerCase()}. Changes can include money added or withdrawn.`
     : mode === "pnl"
-    ? "Value minus cost of holdings at each date. Excludes realized gains and dividends; selling a holding can reduce this balance."
+    ? hasCapitalTracking()
+      ? "Value minus capital invested at each date. Includes realized gains and dividends; only money added or withdrawn moves the capital line."
+      : "Value minus cost of holdings at each date. Excludes realized gains and dividends; selling a holding can reduce this balance."
     : "Recorded daily NAV movement. Dates without a recorded daily figure are left blank.";
   document.querySelector("#chartDescription").textContent = description;
   document.querySelector(".chart-legend").innerHTML = mode === "value"
-    ? '<span><i class="legend-line solid"></i> Portfolio value</span><span><i class="legend-line dashed"></i> Cost basis</span>'
+    ? `<span><i class="legend-line solid"></i> Portfolio value</span><span><i class="legend-line dashed"></i> ${seriesLabels.cost}</span>`
     : '<span><i class="legend-dot profit"></i> Gain</span><span><i class="legend-dot loss"></i> Loss</span><span>Zero = break-even</span>';
   document.querySelectorAll("[data-chart-mode]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.chartMode === mode)));
   document.querySelectorAll("[data-range]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.range === range)));
@@ -2611,7 +2659,10 @@ function importSampleData() {
     holdings.splice(0, holdings.length);
     activities.splice(0, activities.length);
     portfolioSnapshots.splice(0, portfolioSnapshots.length);
+    state.capitalAnchor = null;
   }
+  // A backup's snapshots and its capital anchor describe the same history.
+  if (parsed.capitalAnchor) state.capitalAnchor = normalizeCapitalAnchor(parsed.capitalAnchor);
   if (/^\d{4}-\d{2}-\d{2}$/.test(parsed.logDate || "")) {
     state.logDate = parsed.logDate;
     state.calendarMonth = monthKeyFromDate(state.logDate);
@@ -2770,6 +2821,7 @@ function buildExportPayload() {
     }),
     activities,
     portfolioSnapshots: normalizePortfolioSnapshots(portfolioSnapshots),
+    ...(state.capitalAnchor ? { capitalAnchor: state.capitalAnchor } : {}),
   };
 }
 
@@ -3740,7 +3792,7 @@ function openCalendarInsight(date) {
     return !Number.isNaN(parsed.getTime()) && dateKeyFromDate(parsed) === date;
   });
   showInsight(readableDate(date), `<p class="insight-description">Recorded portfolio snapshot and transactions for this date.</p>
-    <dl class="insight-metrics"><div><dt>Portfolio value</dt><dd class="private-value">${money(snapshot.totalFundValue)}</dd></div><div><dt>Unrealized P&L</dt><dd class="private-value">${signedMoney(snapshot.pnl)}</dd></div><div><dt>Recorded daily P&L</dt><dd class="${daily === null ? "" : "private-value"}">${daily === null ? "Not recorded" : signedMoney(daily)}</dd></div><div><dt>Cost basis</dt><dd class="private-value">${money(snapshot.totalPaid)}</dd></div></dl>
+    <dl class="insight-metrics"><div><dt>Portfolio value</dt><dd class="private-value">${money(snapshot.totalFundValue)}</dd></div><div><dt>${chartLabels().pnl}</dt><dd class="private-value">${signedMoney(snapshot.pnl)}</dd></div><div><dt>Recorded daily P&L</dt><dd class="${daily === null ? "" : "private-value"}">${daily === null ? "Not recorded" : signedMoney(daily)}</dd></div><div><dt>${chartLabels().cost}</dt><dd class="private-value">${money(snapshot.totalPaid)}</dd></div></dl>
     <h3>Transactions on this date</h3>${insightActivityMarkup(transactions)}
     <p class="insight-description">Historical fund-level P&L contributions are not stored in this portfolio snapshot.</p>`);
 }
