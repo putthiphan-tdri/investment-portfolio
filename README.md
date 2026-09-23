@@ -33,11 +33,12 @@ Safari installation reference: [Use Safari web apps on Mac](https://support.appl
 
 ## Dashboard views
 
+- The top bar links to **Overview / Holdings / Activity / Insights** and keeps **Add order** in reach; on phones these move to a bottom bar with Add order in the middle. **Add fund** is on the holdings panel.
 - **Value / P&L / Daily P&L** switches the main chart. P&L is the unrealized balance of holdings at each date; it excludes realized gains and dividends. Daily P&L uses recorded daily NAV movement and leaves missing observations blank.
 - Chart and holdings view preferences are remembered in this browser. Focus the chart's latest point and use arrow keys to explore dates; Escape closes the tooltip.
 - **Overview / Detailed** controls holdings density. On mobile, **Show details** expands one holding. Select a fund name or P&L contribution to inspect its NAV and transaction history.
 - Select a bank summary to filter holdings, or a calendar day to inspect its saved totals and transactions.
-- **Data & backup** contains JSON import/export. **Latest log** returns the log date to the most recent saved snapshot (or the latest weekday when there are no snapshots).
+- The **⋯ (Data & backup)** menu in the top bar contains JSON import/export. **Latest** returns the log date to the most recent saved snapshot (or the latest weekday when there are no snapshots).
 - JSON import defaults to **Merge records**, preserving order IDs and applying same-ID corrections. For a corrected full backup, select **Restore full portfolio** to replace holdings, activity, and snapshots, including removing records absent from the backup. The previous browser payload is saved under `myFundsPortfolio.v1.beforeJsonImport`. Restore uses the backup's balances without replaying transactions; distinct orders are retained even when their amounts match.
 
 ## Checks
