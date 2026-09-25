@@ -1,13 +1,13 @@
 // Bump this version whenever the app shell changes, including index.html/app.js/styles.css.
-const VERSION = '20260923d';
+const VERSION = '20260925a';
 const CACHE_PREFIX = `my-funds-shell-${encodeURIComponent(self.registration.scope)}-`;
 const CACHE_NAME = `${CACHE_PREFIX}${VERSION}`;
 const SHELL_FILES = [
   './',
   './index.html',
-  './styles.css?v=20260923d',
-  './app.js?v=20260923d',
-  './pwa.js?v=20260923d',
+  './styles.css?v=20260925a',
+  './app.js?v=20260925a',
+  './pwa.js?v=20260925a',
   './manifest.webmanifest',
   './icons/icon.svg',
   './icons/icon-192.png',
@@ -34,7 +34,10 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('message', (event) => {
-  if (event.data?.type === 'SKIP_WAITING') self.skipWaiting();
+  if (event.data?.type === 'GET_VERSION') {
+    event.ports?.[0]?.postMessage({ version: VERSION });
+  }
+  if (event.data?.type === 'SKIP_WAITING') event.waitUntil(self.skipWaiting());
 });
 
 self.addEventListener('fetch', (event) => {

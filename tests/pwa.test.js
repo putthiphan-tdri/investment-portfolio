@@ -107,6 +107,15 @@ test('activation only clears older caches for this scope and waits for explicit 
   assert.equal(sw.stores.has(`${prefix}old`), false);
   assert.equal(sw.stores.size, 3);
   assert.equal(sw.claimed, true);
-  sw.handlers.message({ data: { type: 'SKIP_WAITING' } });
+  sw.handlers.message({ data: { type: 'SKIP_WAITING' }, waitUntil() {} });
   assert.equal(sw.skipped, true);
+});
+
+test('worker reports the release that it actually caches', async () => {
+  const sw = worker();
+  await sw.lifecycle('install');
+  let reply;
+  sw.handlers.message({ data: { type: 'GET_VERSION' }, ports: [{ postMessage: value => { reply = value; } }] });
+  assert.ok([...sw.stores.keys()][0].endsWith(`-${reply.version}`));
+  assert.equal(sw.skipped, false);
 });
