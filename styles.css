@@ -1485,10 +1485,39 @@ tbody tr:hover .current-nav-input {
   color: #17203a;
 }
 
-.nav-change-cell,
-.current-nav-cell {
+.nav-change-input,
+.current-nav-input {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+.nav-change-input::-webkit-outer-spin-button,
+.nav-change-input::-webkit-inner-spin-button,
+.current-nav-input::-webkit-outer-spin-button,
+.current-nav-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.nav-change-cell {
   display: grid;
   justify-items: end;
+}
+
+/* Current NAV column is centred: header, input box and digits */
+.holdings-panel .table-wrap th:nth-child(8),
+.holdings-panel .table-wrap td:nth-child(8) {
+  text-align: center;
+}
+
+.current-nav-cell {
+  display: grid;
+  justify-items: center;
+}
+
+.current-nav-input {
+  margin-right: 0;
+  text-align: center;
 }
 
 /* Foreign-currency funds: Current Value is typed directly in THB */
@@ -3119,9 +3148,11 @@ th[data-col].sort-desc::after {
 .holdings-view { margin-left: auto; }
 .holdings-panel { scroll-margin-top: 100px; }
 .holding-expand { display: none; }
-.holdings-overview th:nth-child(3), .holdings-overview th:nth-child(6), .holdings-overview th:nth-child(8),
-.holdings-overview tr:not(.empty-table-row) td:nth-child(3), .holdings-overview tr:not(.empty-table-row) td:nth-child(6), .holdings-overview tr:not(.empty-table-row) td:nth-child(8) { display: none; }
+.holdings-overview th:nth-child(3), .holdings-overview th:nth-child(5), .holdings-overview th:nth-child(6), .holdings-overview th:nth-child(8),
+.holdings-overview tr:not(.empty-table-row) td:nth-child(3), .holdings-overview tr:not(.empty-table-row) td:nth-child(5), .holdings-overview tr:not(.empty-table-row) td:nth-child(6), .holdings-overview tr:not(.empty-table-row) td:nth-child(8) { display: none; }
 .holdings-overview table { min-width: 860px; }
+.holdings-panel:not(.holdings-overview) th:nth-child(7),
+.holdings-panel:not(.holdings-overview) tr:not(.empty-table-row) td:nth-child(7) { display: none; }
 .insight-dialog { width: min(620px, calc(100vw - 32px)); }
 .insight-description, .insight-empty { color: var(--muted); font-size: 13px; line-height: 1.6; }
 .insight-dialog h3 { font-size: 14px; margin: 24px 0 10px; }
@@ -3325,10 +3356,16 @@ th[data-col].sort-desc::after {
   .holdings-panel button:active { transform: scale(.98); }
   .holdings-panel button:focus-visible, .holding-mobile-sort select:focus-visible { outline: 2px solid #526077; outline-offset: 2px; }
   .holdings-panel.holdings-overview .table-wrap tbody tr[data-symbol]:not(.holding-expanded) td:is(:nth-child(2), :nth-child(3), :nth-child(4), :nth-child(5), :nth-child(6), :nth-child(7), :nth-child(8)) { display: none; }
+  .holdings-panel.holdings-overview .table-wrap tbody tr[data-symbol] td:nth-child(5) { display: none; }
+  .holdings-panel:not(.holdings-overview) .table-wrap tbody tr[data-symbol] td:nth-child(7),
+  .holdings-panel:not(.holdings-overview) .holding-mobile-day { display: none; }
   .holdings-panel .table-wrap tbody tr.cash-row td:nth-child(10),
   .holdings-panel .table-wrap tbody tr.cash-row td:is(:nth-child(5), :nth-child(6), :nth-child(7), :nth-child(8)) { display: none; }
   .holdings-panel .table-wrap tbody tr.cash-row td:nth-child(9) { grid-column: 1 / -1; }
   .holdings-panel .table-wrap tbody tr.cash-row td:nth-child(9)::before { content: "Available cash"; }
+  .holdings-panel .table-wrap tbody tr[data-symbol] td:nth-child(8) { text-align: right; }
+  .holdings-panel .current-nav-cell { justify-items: end; }
+  .holdings-panel .current-nav-input { text-align: right; }
   .holdings-panel .nav-change-input, .holdings-panel .current-nav-input, .holdings-panel .fund-value-input {
     max-width: 100%; width: 100%; min-height: 44px; margin: 0; font-size: 16px; border: 1px solid #dfe4eb; background: #f8f9fb;
   }
