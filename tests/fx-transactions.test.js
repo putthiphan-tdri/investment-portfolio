@@ -213,3 +213,65 @@ test('switch metadata survives reload and full USD switch-out can be deleted', (
   near(s.run('deriveFund(holdings[0]).purchaseAmount'), 32000);
   assert.equal(s.run('holdings[0].archived'), false);
 });
+
+const switchToNew = {
+  transactionType: 'Switch', transactionAsset: 'THB-FUND', transactionDestAsset: '__new_switch_destination__',
+  transactionAmount: 3500, transactionSwitchOutNav: 10, transactionBuyingNav: 10,
+  switchFundSymbol: 'new-fund(a)', switchFundName: 'New fund', switchFundCategory: 'Global Equity',
+};
+
+for (const currency of ['THB', 'USD']) {
+  test(`switch into a new ${currency} fund creates one holding and one activity`, () => {
+    const s = session();
+    const isUSD = currency === 'USD';
+    const expectedUnits = isUSD ? 10 : 350;
+    s.confirm({ ...switchToNew, switchFundCurrency: currency, transactionDestAmount: isUSD ? 100 : '' });
+    assert.equal(s.run('activities.length'), 1, s.message);
+    s.run('loadPortfolio()');
+    const dest = s.json('holdings.find(f => f.symbol === "NEW-FUND(A)")');
+    assert.equal(dest.bank, thb.bank);
+    assert.equal(dest.port, thb.port);
+    assert.equal(dest.category, 'Global Equity');
+    assert.equal(dest.navCurrency, currency);
+    near(dest.units, expectedUnits);
+    near(s.run('deriveFund(holdings.find(f => f.symbol === "NEW-FUND(A)")).currentValue'), 3500);
+    near(s.run('holdings.find(f => f.symbol === "THB-FUND").units'), 9650);
+    near(s.run('capitalOn("2026-11-06")'), 232000);
+    near(s.run('cashBalance()'), 100000);
+    const order = s.json('activities[0]');
+    assert.equal(order.type, 'Switch');
+    assert.equal(order.switch.toSymbol, dest.symbol);
+    near(order.switch.destUnits, expectedUnits);
+  });
+}
+
+test('a duplicate code, missing USD amount, or insufficient source units leaves no new holding', () => {
+  const s = session();
+  s.confirm({ ...switchToNew, switchFundSymbol: 'scbusdyield' });
+  assert.match(s.message, /already exists/);
+  s.confirm({ ...switchToNew, switchFundCurrency: 'USD' });
+  assert.match(s.message, /foreign-currency amounts/);
+  s.confirm({ ...switchToNew, transactionAmount: 110000 });
+  assert.match(s.message, /enough units/);
+  assert.equal(s.run('holdings.length'), 3);
+  assert.equal(s.run('activities.length'), 0);
+  near(s.run('holdings[1].units'), 10000);
+});
+
+test('editing a switch can replace its new destination, and deleting it restores source units', () => {
+  const s = session();
+  s.confirm(switchToNew);
+  const id = s.run('activities[0].id');
+  s.confirm({ ...switchToNew, switchFundSymbol: 'OTHER', transactionAmount: 110000 }, id);
+  assert.equal(s.run('holdings.some(f => f.symbol === "OTHER")'), false);
+  near(s.run('holdings.find(f => f.symbol === "NEW-FUND(A)").units'), 350);
+  near(s.run('holdings[1].units'), 9650);
+  s.confirm({ ...switchToNew, switchFundSymbol: 'OTHER' }, id);
+  assert.equal(s.run('activities.length'), 1);
+  assert.equal(s.run('activities[0].switch.toSymbol'), 'OTHER');
+  assert.equal(s.run('holdings.some(f => f.symbol === "NEW-FUND(A)")'), false);
+  s.run(`state.action = 'Edit Transaction'; state.editingActivityId = activities[0].id; deleteEditingActivity()`);
+  assert.equal(s.run('holdings.length'), 3);
+  assert.equal(s.run('activities.length'), 0);
+  near(s.run('holdings[1].units'), 10000);
+});

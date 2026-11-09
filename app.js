@@ -14,6 +14,7 @@ const categoryPalette = {
 
 const CASH_SYMBOL = "CASH";
 const CASH_CATEGORY = "Cash";
+const NEW_SWITCH_DESTINATION = "__new_switch_destination__";
 
 const holdings = [];
 
@@ -1472,7 +1473,7 @@ function renderHoldings() {
     <tr data-symbol="${item.symbol}">
       <td data-label="Fund">
         <div class="asset-cell">
-          <span class="asset-name"><strong>${item.symbol}${item.navCurrency && item.navCurrency !== "THB" ? ` <span class="ccy-chip" title="NAV in ${item.navCurrency}, valued at ${nav(item.fxRate)} THB/${item.navCurrency}">${item.navCurrency}</span>` : ""}</strong><span>${item.name}</span><small class="holding-mobile-meta">${htmlAttr(item.bank)} · ${htmlAttr(item.port)}</small></span>
+          <span class="asset-name"><strong>${item.symbol}${item.navCurrency && item.navCurrency !== "THB" ? ` <span class="ccy-chip" title="NAV in ${item.navCurrency}, valued at ${nav(item.fxRate)} THB/${item.navCurrency}">${item.navCurrency}</span>` : ""}</strong><span>${htmlAttr(item.name)}</span><small class="holding-mobile-meta">${htmlAttr(item.bank)} · ${htmlAttr(item.port)}</small></span>
         </div>
       </td>
       <td data-label="Bank / Port"><strong>${item.bank}</strong><span class="cell-note">${item.port}</span></td>
@@ -1929,9 +1930,9 @@ function clearArchiveState(holding) {
 
 // Apply (direction 1) or reverse (direction -1) a switch across both holdings.
 // Reversal relies on the cost/unit figures captured into `data` when first applied.
-function applySwitch(data, direction = 1) {
+function applySwitch(data, direction = 1, newDestination = null) {
   const source = holdings.find((item) => item.symbol === data.fromSymbol);
-  const dest = holdings.find((item) => item.symbol === data.toSymbol);
+  const dest = holdings.find((item) => item.symbol === data.toSymbol) || newDestination;
   if (!source || !dest) return false;
 
   if (direction === 1) {
@@ -1974,6 +1975,7 @@ function applySwitch(data, direction = 1) {
     // Keep buyingNav units-weighted across the existing and switched holdings.
     dest.buyingNav = newDestUnits > 0 ? (destPrevCapital + destCapitalAdded) / newDestUnits : data.destBuyingNav;
     if (dest.archived) clearArchiveState(dest);
+    if (dest === newDestination) holdings.push(dest);
     return true;
   }
 
@@ -2011,8 +2013,8 @@ function reverseHoldingEffect(activity) {
   return applyOrderToHolding(holding, activity.type, activityUnitCount(activity), Number(activity.amount || 0), -1, Number(activity.cashBasisAmount || 0) || undefined);
 }
 
-function applyHoldingEffect(activity) {
-  if (activity.type === "Switch" && activity.switch) return applySwitch(activity.switch, 1);
+function applyHoldingEffect(activity, newDestination) {
+  if (activity.type === "Switch" && activity.switch) return applySwitch(activity.switch, 1, newDestination);
   const holding = holdings.find((item) => item.symbol === activity.asset);
   if (!activityAffectsHolding(activity.type) || !holding) return true;
   if (activity.fx) return applyForeignOrder(activity, holding, 1);
@@ -2028,13 +2030,25 @@ function reverseActivityEffect(activity) {
   return true;
 }
 
-function applyActivityEffect(activity) {
-  if (!applyHoldingEffect(activity)) return false;
+function applyActivityEffect(activity, newDestination) {
+  if (!applyHoldingEffect(activity, newDestination)) return false;
   if (!applyCashEffect(activity, 1)) {
     reverseHoldingEffect(activity);
     return false;
   }
   return true;
+}
+
+// Remove a fund opened by this switch only after an edit or deletion commits.
+function removeUnusedSwitchDestination(data) {
+  if (!data?.opensDestination) return;
+  const symbol = data.toSymbol;
+  const index = holdings.findIndex((item) => item.symbol === symbol);
+  const fund = holdings[index];
+  if (!fund || Number(fund.units) > 0 || Number(fund.purchaseAmount) > 0 || fund.navHistory?.length) return;
+  const hasActivity = activities.some((item) =>
+    item.asset === symbol || item.switch?.fromSymbol === symbol || item.switch?.toSymbol === symbol);
+  if (!hasActivity) holdings.splice(index, 1);
 }
 
 function computeNiceTicks(dataMin, dataMax, count = 5) {
@@ -2631,7 +2645,7 @@ function fieldMarkup(config) {
         <label>
           ${field.label}
           <select id="${field.id}">
-            ${field.options.map((option) => `<option value="${option}" ${option === field.value ? "selected" : ""}>${option}</option>`).join("")}
+            ${field.options.map((option) => `<option value="${htmlAttr(option)}" ${option === field.value ? "selected" : ""}>${htmlAttr(field.optionLabels?.[option] ?? option)}</option>`).join("")}
           </select>
         </label>
       `;
@@ -2659,7 +2673,7 @@ function fieldMarkup(config) {
     return `
       <label>
         ${field.label}
-        <input id="${field.id}" type="${field.type || "text"}" step="${field.step || "any"}" value="${field.value ?? ""}" min="${field.min ?? ""}" />
+        <input id="${field.id}" type="${field.type || "text"}" step="${field.step || "any"}" value="${htmlAttr(field.value)}" min="${field.min ?? ""}" />
       </label>
     `;
   }).join("");
@@ -3047,14 +3061,25 @@ function transactionFieldMarkup(type, values = {}) {
   const typeField = { id: "transactionType", label: "Order type", kind: "select", options: transactionTypeOptions(), value: type };
 
   if (type === "Switch") {
-    const fundOptions = transactionFundOptions([values.asset, values.destAsset], true);
+    const isNewDestination = values.destAsset === NEW_SWITCH_DESTINATION;
+    const fundOptions = transactionFundOptions([values.asset, isNewDestination ? null : values.destAsset], true);
     const source = holdings.find((item) => item.symbol === (values.asset || fundOptions[0]));
-    const dest = holdings.find((item) => item.symbol === (values.destAsset || fundOptions[0]));
+    const dest = isNewDestination ? draftSwitchFund(values) : holdings.find((item) => item.symbol === (values.destAsset || fundOptions[0]));
     return fieldMarkup([
       dateField,
       typeField,
       { id: "transactionAsset", label: "Switch from (source)", kind: "select", options: fundOptions, value: values.asset },
-      { id: "transactionDestAsset", label: "Switch to (destination)", kind: "select", options: fundOptions, value: values.destAsset },
+      { id: "transactionDestAsset", label: "Switch to (destination)", kind: "select",
+        options: [...fundOptions, NEW_SWITCH_DESTINATION], value: values.destAsset,
+        optionLabels: { [NEW_SWITCH_DESTINATION]: "Add a new fund…" } },
+      ...(isNewDestination ? [
+        { id: "switchFundSymbol", label: "New fund code", value: values.newFundSymbol },
+        { id: "switchFundName", label: "Fund name (optional)", value: values.newFundName },
+        { id: "switchFundCategory", label: "Category", kind: "select",
+          options: Object.keys(categoryPalette).filter((category) => category !== CASH_CATEGORY), value: dest.category },
+        { id: "switchFundCurrency", label: "NAV currency", kind: "select",
+          options: Object.keys(currencyConfig), value: dest.navCurrency },
+      ] : []),
       { id: "transactionAmount", label: "Switch amount (THB)", type: "number", step: "0.01", value: values.amount ?? "1500", min: "0" },
       ...nativeTransactionFields(source, "transactionSourceAmount", values.sourceAmount, "Source proceeds"),
       ...nativeTransactionFields(dest, "transactionDestAmount", values.destAmount, "Destination investment"),
@@ -3118,12 +3143,37 @@ function nativeTransactionFields(holding, id, value, label) {
   return [{ id, label: `${label} (${fundNavCurrency(holding)})`, type: "number", step: "any", value: value ?? "", min: "0" }];
 }
 
+function draftSwitchFund(values) {
+  const symbol = String(values.newFundSymbol || "").trim().toUpperCase();
+  return {
+    symbol,
+    name: String(values.newFundName || "").trim() || symbol,
+    category: values.newFundCategory || "Mixed Allocation",
+    navCurrency: values.newFundCurrency || "THB",
+  };
+}
+
+function newSwitchFundError(fund) {
+  if (!/^[A-Z0-9][A-Z0-9._()+&/-]*$/.test(fund.symbol)) return "Enter the new fund’s code as shown on your confirmation.";
+  if (fund.symbol === CASH_SYMBOL || holdings.some((item) => item.symbol.toUpperCase() === fund.symbol)) {
+    return "That code already exists. Choose the existing fund as the destination.";
+  }
+  if (fund.category === CASH_CATEGORY || !Object.hasOwn(categoryPalette, fund.category) || !Object.hasOwn(currencyConfig, fund.navCurrency)) {
+    return "Choose a category and NAV currency for the new fund.";
+  }
+  return "";
+}
+
 function readTransactionFormValues() {
   const field = (id) => document.querySelector(`#${id}`);
   return {
     date: field("transactionDate")?.value,
     asset: field("transactionAsset")?.value,
     destAsset: field("transactionDestAsset")?.value,
+    newFundSymbol: field("switchFundSymbol")?.value,
+    newFundName: field("switchFundName")?.value,
+    newFundCategory: field("switchFundCategory")?.value,
+    newFundCurrency: field("switchFundCurrency")?.value,
     units: field("transactionUnits")?.value,
     amount: field("transactionAmount")?.value,
     nativeAmount: field("transactionNativeAmount")?.value,
@@ -3172,11 +3222,19 @@ function bindOrderFormHelpers() {
           values.buyingNav = "";
         }
         renderTransactionFields(typeInput.value, values);
+        const focusId = id === "transactionDestAsset" && values.destAsset === NEW_SWITCH_DESTINATION
+          ? "switchFundSymbol" : id;
+        document.querySelector(`#${focusId}`)?.focus();
       });
     });
   }
 
   if (typeInput.value === "Switch") {
+    document.querySelector("#switchFundCurrency")?.addEventListener("change", () => {
+      const values = readTransactionFormValues();
+      renderTransactionFields("Switch", { ...values, destAmount: "", buyingNav: "" });
+      document.querySelector("#switchFundCurrency")?.focus();
+    });
     bindSwitchHelpers();
   } else if (typeInput.value === "Dividend") {
     bindDividendHelpers();
@@ -3320,11 +3378,21 @@ function bindSwitchHelpers() {
   const renderPreview = () => {
     if (!preview) return;
     const source = holdings.find((item) => item.symbol === sourceInput.value);
-    const dest = holdings.find((item) => item.symbol === destInput.value);
+    const isNewDestination = destInput.value === NEW_SWITCH_DESTINATION;
+    const dest = isNewDestination
+      ? draftSwitchFund(readTransactionFormValues())
+      : holdings.find((item) => item.symbol === destInput.value);
     const invested = Number(amountInput?.value || 0);
     const switchOutNav = Number(switchOutNavInput?.value || 0);
     const buyingNav = Number(buyingNavInput?.value || 0);
 
+    if (isNewDestination) {
+      const error = newSwitchFundError(dest);
+      if (error) {
+        preview.textContent = error;
+        return;
+      }
+    }
     if (source && dest && sourceInput.value === destInput.value) {
       preview.innerHTML = `<span class="order-preview-hint">Pick two different funds to switch between.</span>`;
       return;
@@ -3340,18 +3408,22 @@ function bindSwitchHelpers() {
       return;
     }
     const data = buildSwitchData(source, dest, invested, switchOutNav, buyingNav, conversion);
-    const heldUnits = Number(source.units || 0);
+    const previousSwitch = activities.find((item) => item.id === state.editingActivityId)?.switch;
+    const restoredUnits = previousSwitch?.fromSymbol === source.symbol ? Number(previousSwitch.sourceUnits) : 0;
+    const reversedUnits = previousSwitch?.toSymbol === source.symbol ? Number(previousSwitch.destUnits) : 0;
+    const heldUnits = Number(source.units || 0) + restoredUnits - reversedUnits;
     const enough = data.sourceUnits <= heldUnits + 0.0001;
     preview.innerHTML = `
-      <div class="order-preview-row"><span>Switch out · ${source.symbol}</span><b>-${data.sourceUnits.toFixed(4)} units</b></div>
-      <div class="order-preview-row"><span>Destination NAV · ${dest.symbol}</span><b>${data.destBuyingNav.toFixed(4)}</b></div>
-      <div class="order-preview-row"><span>Switch in · ${dest.symbol}</span><b>+${data.destUnits.toFixed(4)} units</b></div>
+      <div class="order-preview-row"><span>Switch out · ${htmlAttr(source.symbol)}</span><b>-${data.sourceUnits.toFixed(4)} units</b></div>
+      <div class="order-preview-row"><span>Destination NAV · ${htmlAttr(dest.symbol)}</span><b>${data.destBuyingNav.toFixed(4)}</b></div>
+      <div class="order-preview-row"><span>Switch in · ${htmlAttr(dest.symbol)}</span><b>+${data.destUnits.toFixed(4)} units</b></div>
       ${conversion ? `<div class="order-preview-row"><span>Recorded conversion · THB per ${data.sourceCurrency !== "THB" ? data.sourceCurrency : data.destCurrency}</span><b>${nav(data.sourceCurrency !== "THB" ? data.sourceFxRate : data.destFxRate)}</b></div>` : ""}
-      ${enough ? "" : `<div class="order-preview-row order-preview-warn"><span>${source.symbol} holds only ${heldUnits.toFixed(4)} units</span><b>Not enough</b></div>`}
+      ${isNewDestination ? `<span class="order-preview-hint">The new fund will use the source fund’s bank and portfolio. Its initial value uses the buying NAV${conversion && dest.navCurrency !== "THB" ? " and switch exchange rate" : ""}.</span>` : ""}
+      ${enough ? "" : `<div class="order-preview-row order-preview-warn"><span>${htmlAttr(source.symbol)} has ${heldUnits.toFixed(4)} units available</span><b>Not enough</b></div>`}
     `;
   };
 
-  [amountInput, switchOutNavInput, buyingNavInput, sourceAmountInput, destAmountInput].forEach((el) => {
+  [amountInput, switchOutNavInput, buyingNavInput, sourceAmountInput, destAmountInput, document.querySelector("#switchFundSymbol")].forEach((el) => {
     el?.addEventListener("input", renderPreview);
   });
 
@@ -3588,6 +3660,7 @@ function handleConfirm(event) {
 
     // Resolve the new order into either a switch descriptor or a fund/units/amount order.
     let newSwitchData = null;
+    let newSwitchDestination = null;
     let asset = getValue("transactionAsset");
     let unitCount = parseUnits(getValue("transactionUnits"));
     let holding = holdings.find((item) => item.symbol === asset);
@@ -3616,15 +3689,25 @@ function handleConfirm(event) {
       const switchOutNav = Number(getValue("transactionSwitchOutNav") || 0);
       const destBuyingNav = Number(getValue("transactionBuyingNav") || 0);
       const source = holdings.find((item) => item.symbol === fromSymbol);
-      const dest = holdings.find((item) => item.symbol === toSymbol);
+      const isNewDestination = toSymbol === NEW_SWITCH_DESTINATION;
+      const dest = isNewDestination
+        ? draftSwitchFund(readTransactionFormValues())
+        : holdings.find((item) => item.symbol === toSymbol);
 
-      if (!source || !dest) {
+      if (!source || !dest || isCashHolding(source) || isCashHolding(dest)) {
         showToast("Switch needs a source and a destination fund.");
         return;
       }
-      if (fromSymbol === toSymbol) {
+      if (fromSymbol === dest.symbol) {
         showToast("Pick two different funds to switch between.");
         return;
+      }
+      if (isNewDestination) {
+        const error = newSwitchFundError(dest);
+        if (error) {
+          showToast(error);
+          return;
+        }
       }
       if (![switchOutNav, destBuyingNav].every((value) => Number.isFinite(value) && value > 0)) {
         showToast("Switch needs an invested amount, switch-out NAV, and destination buying NAV.");
@@ -3637,6 +3720,23 @@ function handleConfirm(event) {
         return;
       }
       newSwitchData = buildSwitchData(source, dest, amount, switchOutNav, destBuyingNav, conversion);
+      if (isNewDestination) {
+        const fxRate = newSwitchData.destFxRate ?? 1;
+        newSwitchDestination = {
+          ...dest,
+          bank: source.bank || "Unassigned Bank",
+          port: source.port || "Main Port",
+          units: 0,
+          purchaseAmount: 0,
+          buyingNav: destBuyingNav,
+          currentNav: destBuyingNav,
+          baseNav: destBuyingNav,
+          fxRate,
+          buyFxRate: fxRate,
+          navHistory: [],
+        };
+        newSwitchData.opensDestination = true;
+      }
       asset = fromSymbol;
     } else if (type === "Dividend") {
       if (!asset || !holding || amount <= 0) {
@@ -3760,8 +3860,12 @@ function handleConfirm(event) {
         if (type === "Sell") cashBasisAmount = sellCostBasis(updatedHolding, unitCount);
       }
 
+      const previousSwitch = activity.switch;
+      if (previousSwitch?.opensDestination && newSwitchData?.toSymbol === previousSwitch.toSymbol) {
+        newSwitchData.opensDestination = true;
+      }
       const nextActivity = buildActivity(activity);
-      if (!applyActivityEffect(nextActivity)) {
+      if (!applyActivityEffect(nextActivity, newSwitchDestination)) {
         applyActivityEffect(activity);
         showToast(type === "Switch"
           ? "Source fund no longer has enough units for this switch."
@@ -3771,6 +3875,7 @@ function handleConfirm(event) {
 
       Object.keys(activity).forEach((key) => delete activity[key]);
       Object.assign(activity, nextActivity);
+      removeUnusedSwitchDestination(previousSwitch);
       state.editingActivityId = "";
       savePortfolio();
       renderAll();
@@ -3784,7 +3889,7 @@ function handleConfirm(event) {
         : updatedMessage);
     } else {
       const newActivity = buildActivity({ id: makeId("activity") });
-      if (!applyActivityEffect(newActivity)) {
+      if (!applyActivityEffect(newActivity, newSwitchDestination)) {
         showToast(type === "Switch"
           ? "Source fund doesn't have enough units to switch that amount."
           : type === "Buy" && fromCash
@@ -3857,6 +3962,7 @@ function deleteEditingActivity() {
   }
 
   activities.splice(existingIndex, 1);
+  removeUnusedSwitchDestination(activity.switch);
   document.querySelector("#actionDialog").close();
   state.editingActivityId = "";
   savePortfolio();
