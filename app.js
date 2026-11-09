@@ -468,6 +468,7 @@ function normalizeActivities(items) {
     cashPort: item.cashPort ? String(item.cashPort) : "",
     depositedToCash: Boolean(item.depositedToCash || item.toCash),
     fromCash: Boolean(item.fromCash || item.useCash),
+    ...(item.fx ? { fx: { ...item.fx } } : {}),
     ...(item.switch ? { switch: item.switch } : {}),
   }));
 }
@@ -1722,6 +1723,14 @@ function activityAmountLabel(activity) {
 }
 
 function activityDetailLabel(activity) {
+  if (activity.fx) {
+    const prefix = activity.fromCash ? "Paid from Cash · " : activity.depositedToCash ? "Deposited to Cash · " : "";
+    return `${prefix}${formatActivityUnits(activity.units)} · ${Number(activity.fx.nativeAmount).toFixed(2)} ${activity.fx.currency} · ${nav(activity.fx.rate)} THB/${activity.fx.currency}`;
+  }
+  if (activity.switch?.sourceCurrency) {
+    const data = activity.switch;
+    return `${Number(data.sourceAmount).toFixed(2)} ${data.sourceCurrency} → ${Number(data.destAmount).toFixed(2)} ${data.destCurrency}`;
+  }
   if (activity.type === "Sell" && activity.depositedToCash) return "Deposited to Cash";
   if (activity.type === "Buy" && activity.fromCash) return `Paid from Cash${activity.units ? ` · ${formatActivityUnits(activity.units)}` : ""}`;
   if (activity.type === "Deposit") return "Added to Cash";
@@ -1830,11 +1839,13 @@ function applyOrderToHolding(holding, type, units, amount, direction = 1, costBa
 
 // Build the full math for a fund-to-fund switch from the values the user enters.
 // Switches use the destination NAV directly because any switch fee is calculated manually.
-function buildSwitchData(source, dest, invested, switchOutNav, destBuyingNav) {
+function buildSwitchData(source, dest, invested, switchOutNav, destBuyingNav, conversion = null) {
   const destFeeRate = 0;
   const destOfferNav = destBuyingNav;
-  const sourceUnits = switchOutNav > 0 ? invested / switchOutNav : 0;
-  const destUnits = destOfferNav > 0 ? invested / destOfferNav : 0;
+  const sourceAmount = conversion?.sourceAmount ?? invested;
+  const destAmount = conversion?.destAmount ?? invested;
+  const sourceUnits = switchOutNav > 0 ? sourceAmount / switchOutNav : 0;
+  const destUnits = destOfferNav > 0 ? destAmount / destOfferNav : 0;
   return {
     fromSymbol: source.symbol,
     toSymbol: dest.symbol,
@@ -1845,7 +1856,68 @@ function buildSwitchData(source, dest, invested, switchOutNav, destBuyingNav) {
     destFeeRate,
     destOfferNav,
     destUnits,
+    ...(conversion ? {
+      sourceCurrency: fundNavCurrency(source), destCurrency: fundNavCurrency(dest),
+      sourceAmount, destAmount,
+      sourceFxRate: invested / sourceAmount, destFxRate: invested / destAmount,
+    } : {}),
   };
+}
+
+function switchConversion(source, dest, amount, sourceNative, destNative) {
+  if (fundNavCurrency(source) === "THB" && fundNavCurrency(dest) === "THB") return null;
+  const sourceAmount = fundNavCurrency(source) === "THB" ? amount : Number(sourceNative);
+  const destAmount = fundNavCurrency(dest) === "THB" ? amount : Number(destNative);
+  if (![sourceAmount, destAmount].every((value) => Number.isFinite(value) && value > 0)) return false;
+  return { sourceAmount, destAmount };
+}
+
+// Keep the native cost and its locked THB basis together when adding/removing lots.
+// Current valuation FX is independent of the transaction's settlement conversion.
+function adjustFundCost(holding, nativeDelta, thbDelta) {
+  const nativeCost = Number(holding.purchaseAmount || 0);
+  const thbCost = nativeCost * fundBuyFx(holding);
+  holding.purchaseAmount = Math.max(nativeCost + nativeDelta, 0);
+  if (fundNavCurrency(holding) !== "THB" && holding.purchaseAmount > 0) {
+    holding.buyFxRate = Math.max(thbCost + thbDelta, 0) / holding.purchaseAmount;
+  }
+}
+
+function applyForeignOrder(activity, holding, direction) {
+  const units = activityUnitCount(activity);
+  const fx = activity.fx;
+  const amount = Number(activity.amount);
+  if (![units, amount, fx.nativeAmount, fx.rate].every((value) => Number.isFinite(value) && value > 0)) return false;
+  const previousUnits = Number(holding.units || 0);
+  const previousCost = Number(holding.purchaseAmount || 0);
+  const previousThbCost = previousCost * fundBuyFx(holding);
+  if (activity.type === "Sell" && direction === 1) {
+    if (units > previousUnits + 0.0001) return false;
+    fx.costRemoved = sellCostBasis(holding, units);
+    fx.costRemovedTHB = fx.costRemoved * fundBuyFx(holding);
+    activity.cashBasisAmount = fx.costRemovedTHB;
+  }
+  const isBuy = activity.type === "Buy";
+  const unitDelta = (isBuy ? units : -units) * direction;
+  const nativeDelta = (isBuy ? fx.nativeAmount : -Number(fx.costRemoved || 0)) * direction;
+  const thbDelta = (isBuy ? amount : -Number(fx.costRemovedTHB || 0)) * direction;
+  if (previousUnits + unitDelta < -0.0001 || previousCost + nativeDelta < -0.01 || previousThbCost + thbDelta < -0.01) return false;
+  adjustFundCost(holding, nativeDelta, thbDelta);
+  holding.units = Math.max(previousUnits + unitDelta, 0);
+  if (holding.units < 0.00000001) holding.units = 0;
+  if (holding.units > 0) {
+    holding.buyingNav = holding.purchaseAmount / holding.units;
+    clearArchiveState(holding);
+  } else if (!isBuy && direction === 1) {
+    holding.archived = true;
+    holding.archivedAt = readableDate(activeDateKey());
+    holding.archivedDate = activeDateKey();
+    holding.archivedSaleAmount = amount;
+    holding.archivedUnits = previousUnits;
+    holding.archivedPnl = amount - previousThbCost;
+    holding.archivedPnlPct = previousThbCost > 0 ? (holding.archivedPnl / previousThbCost) * 100 : 0;
+  }
+  return true;
 }
 
 const ARCHIVE_KEYS = ["archivedAt", "archivedDate", "archivedSaleAmount", "archivedUnits", "archivedPnl", "archivedPnlPct"];
@@ -1872,20 +1944,23 @@ function applySwitch(data, direction = 1) {
 
     // Capture what's needed to reverse this exact switch later.
     data.sourceCostRemoved = costRemoved;
+    if (data.sourceCurrency) data.sourceCostRemovedTHB = costRemoved * fundBuyFx(source);
     data.sourceEmptied = isFull;
     data.destCapitalAdded = destCapitalAdded;
 
     // Source side — switch out (no fee), mirroring a partial/full sell.
     source.units = isFull ? 0 : srcUnits - data.sourceUnits;
-    source.purchaseAmount = isFull ? 0 : srcAmount - costRemoved;
+    if (data.sourceCurrency) adjustFundCost(source, -costRemoved, -data.sourceCostRemovedTHB);
+    else source.purchaseAmount = isFull ? 0 : srcAmount - costRemoved;
     if (isFull) {
       source.archived = true;
       source.archivedAt = readableDate(activeDateKey());
       source.archivedDate = activeDateKey();
       source.archivedSaleAmount = data.amount;
       source.archivedUnits = srcUnits;
-      source.archivedPnl = data.amount - srcAmount;
-      source.archivedPnlPct = srcAmount > 0 ? ((data.amount - srcAmount) / srcAmount) * 100 : 0;
+      const basis = data.sourceCostRemovedTHB ?? srcAmount;
+      source.archivedPnl = data.amount - basis;
+      source.archivedPnlPct = basis > 0 ? ((data.amount - basis) / basis) * 100 : 0;
     }
 
     // Destination side — switch in at the exact destination NAV entered by the user.
@@ -1894,7 +1969,8 @@ function applySwitch(data, direction = 1) {
     const destPrevCapital = destPrevUnits * Number(dest.buyingNav || 0);
     const newDestUnits = destPrevUnits + data.destUnits;
     dest.units = newDestUnits;
-    dest.purchaseAmount = destPrevAmount + data.amount;
+    if (data.sourceCurrency) adjustFundCost(dest, data.destAmount, data.amount);
+    else dest.purchaseAmount = destPrevAmount + data.amount;
     // Keep buyingNav units-weighted across the existing and switched holdings.
     dest.buyingNav = newDestUnits > 0 ? (destPrevCapital + destCapitalAdded) / newDestUnits : data.destBuyingNav;
     if (dest.archived) clearArchiveState(dest);
@@ -1904,8 +1980,12 @@ function applySwitch(data, direction = 1) {
   // Reverse: restore the source units/cost, then pull the destination units/cost back out.
   const srcUnits = Number(source.units || 0);
   const srcAmount = Number(source.purchaseAmount || 0);
+  const destCost = data.destAmount ?? data.amount;
+  if (data.destUnits > Number(dest.units || 0) + 0.0001 || destCost > Number(dest.purchaseAmount || 0) + 0.01) return false;
+  if (data.sourceCurrency && data.amount > Number(dest.purchaseAmount || 0) * fundBuyFx(dest) + 0.01) return false;
   source.units = srcUnits + data.sourceUnits;
-  source.purchaseAmount = srcAmount + Number(data.sourceCostRemoved || 0);
+  if (data.sourceCurrency) adjustFundCost(source, Number(data.sourceCostRemoved || 0), Number(data.sourceCostRemovedTHB || 0));
+  else source.purchaseAmount = srcAmount + Number(data.sourceCostRemoved || 0);
   if (data.sourceEmptied) clearArchiveState(source);
 
   const destPrevUnits = Number(dest.units || 0);
@@ -1913,7 +1993,8 @@ function applySwitch(data, direction = 1) {
   const destPrevCapital = destPrevUnits * Number(dest.buyingNav || 0);
   const newDestUnits = Math.max(destPrevUnits - data.destUnits, 0);
   dest.units = newDestUnits;
-  dest.purchaseAmount = Math.max(destPrevAmount - data.amount, 0);
+  if (data.sourceCurrency) adjustFundCost(dest, -data.destAmount, -data.amount);
+  else dest.purchaseAmount = Math.max(destPrevAmount - data.amount, 0);
   dest.buyingNav = newDestUnits > 0
     ? Math.max(destPrevCapital - Number(data.destCapitalAdded || 0), 0) / newDestUnits
     : Number(dest.buyingNav || 0);
@@ -1926,6 +2007,7 @@ function reverseHoldingEffect(activity) {
   if (activity.type === "Switch" && activity.switch) return applySwitch(activity.switch, -1);
   const holding = holdings.find((item) => item.symbol === activity.asset);
   if (!activityAffectsHolding(activity.type) || !holding) return true;
+  if (activity.fx) return applyForeignOrder(activity, holding, -1);
   return applyOrderToHolding(holding, activity.type, activityUnitCount(activity), Number(activity.amount || 0), -1, Number(activity.cashBasisAmount || 0) || undefined);
 }
 
@@ -1933,6 +2015,7 @@ function applyHoldingEffect(activity) {
   if (activity.type === "Switch" && activity.switch) return applySwitch(activity.switch, 1);
   const holding = holdings.find((item) => item.symbol === activity.asset);
   if (!activityAffectsHolding(activity.type) || !holding) return true;
+  if (activity.fx) return applyForeignOrder(activity, holding, 1);
   return applyOrderToHolding(holding, activity.type, activityUnitCount(activity), Number(activity.amount || 0), 1);
 }
 
@@ -2913,6 +2996,8 @@ function openEditActivityDialog(id) {
         amount: activity.switch.amount,
         switchOutNav: activity.switch.switchOutNav,
         buyingNav: activity.switch.destBuyingNav,
+        sourceAmount: activity.switch.sourceAmount,
+        destAmount: activity.switch.destAmount,
       }
     : activity.type === "Dividend"
       ? {
@@ -2927,6 +3012,7 @@ function openEditActivityDialog(id) {
         asset: activity.asset,
         units: activityUnitCount(activity) || "",
         amount: activity.amount,
+        nativeAmount: activity.fx?.nativeAmount,
         fromCash: Boolean(activity.fromCash),
         sellAll: activity.type === "Sell" && holdings.find((item) => item.symbol === activity.asset)?.units === 0,
       };
@@ -2946,8 +3032,8 @@ function transactionTypeOptions() {
     : ["Buy", "Sell", "Switch", "Dividend", "Deposit", "Withdraw", "Transfer"];
 }
 
-function transactionFundOptions(extra = []) {
-  const base = state.action === "Edit Transaction"
+function transactionFundOptions(extra = [], includeArchived = false) {
+  const base = state.action === "Edit Transaction" || includeArchived
     ? holdings.filter((item) => !isCashHolding(item)).map((item) => item.symbol)
     : activeFundHoldings().map((item) => item.symbol);
   return [...new Set([...base, ...extra].filter(Boolean))]
@@ -2961,15 +3047,19 @@ function transactionFieldMarkup(type, values = {}) {
   const typeField = { id: "transactionType", label: "Order type", kind: "select", options: transactionTypeOptions(), value: type };
 
   if (type === "Switch") {
-    const fundOptions = transactionFundOptions([values.asset, values.destAsset]);
+    const fundOptions = transactionFundOptions([values.asset, values.destAsset], true);
+    const source = holdings.find((item) => item.symbol === (values.asset || fundOptions[0]));
+    const dest = holdings.find((item) => item.symbol === (values.destAsset || fundOptions[0]));
     return fieldMarkup([
       dateField,
       typeField,
       { id: "transactionAsset", label: "Switch from (source)", kind: "select", options: fundOptions, value: values.asset },
       { id: "transactionDestAsset", label: "Switch to (destination)", kind: "select", options: fundOptions, value: values.destAsset },
-      { id: "transactionAmount", label: "Invested amount", type: "number", step: "0.01", value: values.amount ?? "1500", min: "0" },
-      { id: "transactionSwitchOutNav", label: "Switch-out NAV (source)", type: "number", step: "0.0001", value: values.switchOutNav ?? "", min: "0" },
-      { id: "transactionBuyingNav", label: "Buying NAV (destination)", type: "number", step: "0.0001", value: values.buyingNav ?? "", min: "0" },
+      { id: "transactionAmount", label: "Switch amount (THB)", type: "number", step: "0.01", value: values.amount ?? "1500", min: "0" },
+      ...nativeTransactionFields(source, "transactionSourceAmount", values.sourceAmount, "Source proceeds"),
+      ...nativeTransactionFields(dest, "transactionDestAmount", values.destAmount, "Destination investment"),
+      { id: "transactionSwitchOutNav", label: `Switch-out NAV (${fundNavCurrency(source || {})})`, type: "number", step: "0.0001", value: values.switchOutNav ?? "", min: "0" },
+      { id: "transactionBuyingNav", label: `Buying NAV (${fundNavCurrency(dest || {})})`, type: "number", step: "0.0001", value: values.buyingNav ?? "", min: "0" },
     ]) + `<div class="order-preview" id="switchPreview" aria-live="polite"></div>`;
   }
 
@@ -2997,12 +3087,15 @@ function transactionFieldMarkup(type, values = {}) {
     </div>`;
   }
 
+  const fundOptions = transactionFundOptions([values.asset], type === "Buy");
+  const selectedFund = holdings.find((item) => item.symbol === (values.asset || fundOptions[0]));
   const fields = [
     dateField,
     typeField,
-    { id: "transactionAsset", label: "Fund", kind: "select", options: transactionFundOptions([values.asset]), value: values.asset },
+    { id: "transactionAsset", label: "Fund", kind: "select", options: fundOptions, value: values.asset },
     { id: "transactionUnits", label: "Units", value: values.units ?? "" },
-    { id: "transactionAmount", label: "Amount", type: "number", step: "0.01", value: values.amount ?? "1500", min: "0" },
+    { id: "transactionAmount", label: type === "Sell" ? "Proceeds received (THB)" : type === "Buy" ? "Amount paid (THB)" : "Amount (THB)", type: "number", step: "0.01", value: values.amount ?? "1500", min: "0" },
+    ...((type === "Buy" || type === "Sell") ? nativeTransactionFields(selectedFund, "transactionNativeAmount", values.nativeAmount, type === "Buy" ? "Amount invested" : "Proceeds received") : []),
   ];
 
   if (type === "Buy") {
@@ -3016,7 +3109,13 @@ function transactionFieldMarkup(type, values = {}) {
   }
 
   fields.push({ id: "transactionSellAll", label: "Sell all units in this fund", kind: "checkbox", checked: Boolean(values.sellAll) });
-  return fieldMarkup(fields);
+  return fieldMarkup(fields) + ((type === "Buy" || type === "Sell") && selectedFund && fundNavCurrency(selectedFund) !== "THB"
+    ? `<div class="order-preview" id="fxPreview" aria-live="polite"></div>` : "");
+}
+
+function nativeTransactionFields(holding, id, value, label) {
+  if (!holding || fundNavCurrency(holding) === "THB") return [];
+  return [{ id, label: `${label} (${fundNavCurrency(holding)})`, type: "number", step: "any", value: value ?? "", min: "0" }];
 }
 
 function readTransactionFormValues() {
@@ -3027,6 +3126,9 @@ function readTransactionFormValues() {
     destAsset: field("transactionDestAsset")?.value,
     units: field("transactionUnits")?.value,
     amount: field("transactionAmount")?.value,
+    nativeAmount: field("transactionNativeAmount")?.value,
+    sourceAmount: field("transactionSourceAmount")?.value,
+    destAmount: field("transactionDestAmount")?.value,
     taxAmount: field("transactionTaxAmount")?.value,
     grossAmount: field("transactionGrossAmount")?.value,
     switchOutNav: field("transactionSwitchOutNav")?.value,
@@ -3056,6 +3158,23 @@ function bindOrderFormHelpers() {
   typeInput.addEventListener("change", () => {
     renderTransactionFields(typeInput.value, readTransactionFormValues());
   });
+
+  if (["Buy", "Sell", "Switch"].includes(typeInput.value)) {
+    ["transactionAsset", "transactionDestAsset"].forEach((id) => {
+      document.querySelector(`#${id}`)?.addEventListener("change", () => {
+        const values = readTransactionFormValues();
+        if (id === "transactionAsset") {
+          values.nativeAmount = "";
+          values.sourceAmount = "";
+          values.switchOutNav = "";
+        } else {
+          values.destAmount = "";
+          values.buyingNav = "";
+        }
+        renderTransactionFields(typeInput.value, values);
+      });
+    });
+  }
 
   if (typeInput.value === "Switch") {
     bindSwitchHelpers();
@@ -3124,6 +3243,20 @@ function bindBuySellHelpers() {
   const sellAllInput = document.querySelector("#transactionSellAll");
   const useCashInput = document.querySelector("#transactionUseCash");
   if (!typeInput || !assetInput || !unitsInput) return;
+  const amountInput = document.querySelector("#transactionAmount");
+  const nativeInput = document.querySelector("#transactionNativeAmount");
+  const preview = document.querySelector("#fxPreview");
+  const renderFxPreview = () => {
+    if (!preview) return;
+    const amount = Number(amountInput?.value);
+    const nativeAmount = Number(nativeInput?.value);
+    const currency = fundNavCurrency(holdings.find((item) => item.symbol === assetInput.value));
+    preview.innerHTML = amount > 0 && nativeAmount > 0
+      ? `<div class="order-preview-row"><span>Recorded conversion · THB per ${currency}</span><b>${nav(amount / nativeAmount)}</b></div><span class="order-preview-hint">Units stay in the fund’s native denomination. The THB amount records cash and cost; current valuation uses the holding’s current FX.</span>`
+      : `<span class="order-preview-hint">Enter the actual THB and ${currency} amounts from your confirmation. The conversion rate is saved with this order.</span>`;
+  };
+  [amountInput, nativeInput].forEach((input) => input?.addEventListener("input", renderFxPreview));
+  renderFxPreview();
 
   const syncUseCashLabel = () => {
     if (!useCashInput) return;
@@ -3166,6 +3299,8 @@ function bindSwitchHelpers() {
   const amountInput = document.querySelector("#transactionAmount");
   const switchOutNavInput = document.querySelector("#transactionSwitchOutNav");
   const buyingNavInput = document.querySelector("#transactionBuyingNav");
+  const sourceAmountInput = document.querySelector("#transactionSourceAmount");
+  const destAmountInput = document.querySelector("#transactionDestAmount");
   const preview = document.querySelector("#switchPreview");
   if (!sourceInput || !destInput) return;
 
@@ -3199,29 +3334,25 @@ function bindSwitchHelpers() {
       return;
     }
 
-    const data = buildSwitchData(source, dest, invested, switchOutNav, buyingNav);
+    const conversion = switchConversion(source, dest, invested, sourceAmountInput?.value, destAmountInput?.value);
+    if (conversion === false) {
+      preview.innerHTML = `<span class="order-preview-hint">Enter the actual foreign-currency amounts from your switch confirmation. NAVs use each fund’s native currency.</span>`;
+      return;
+    }
+    const data = buildSwitchData(source, dest, invested, switchOutNav, buyingNav, conversion);
     const heldUnits = Number(source.units || 0);
     const enough = data.sourceUnits <= heldUnits + 0.0001;
     preview.innerHTML = `
       <div class="order-preview-row"><span>Switch out · ${source.symbol}</span><b>-${data.sourceUnits.toFixed(4)} units</b></div>
       <div class="order-preview-row"><span>Destination NAV · ${dest.symbol}</span><b>${data.destBuyingNav.toFixed(4)}</b></div>
       <div class="order-preview-row"><span>Switch in · ${dest.symbol}</span><b>+${data.destUnits.toFixed(4)} units</b></div>
+      ${conversion ? `<div class="order-preview-row"><span>Recorded conversion · THB per ${data.sourceCurrency !== "THB" ? data.sourceCurrency : data.destCurrency}</span><b>${nav(data.sourceCurrency !== "THB" ? data.sourceFxRate : data.destFxRate)}</b></div>` : ""}
       ${enough ? "" : `<div class="order-preview-row order-preview-warn"><span>${source.symbol} holds only ${heldUnits.toFixed(4)} units</span><b>Not enough</b></div>`}
     `;
   };
 
-  [amountInput, switchOutNavInput, buyingNavInput].forEach((el) => {
+  [amountInput, switchOutNavInput, buyingNavInput, sourceAmountInput, destAmountInput].forEach((el) => {
     el?.addEventListener("input", renderPreview);
-  });
-  sourceInput.addEventListener("change", () => {
-    if (switchOutNavInput) switchOutNavInput.value = "";
-    prefillSourceNav();
-    renderPreview();
-  });
-  destInput.addEventListener("change", () => {
-    if (buyingNavInput) buyingNavInput.value = "";
-    prefillDestNav();
-    renderPreview();
   });
 
   prefillSourceNav();
@@ -3463,6 +3594,21 @@ function handleConfirm(event) {
     const sellAll = type === "Sell" && isChecked("transactionSellAll");
     const fromCash = type === "Buy" && isChecked("transactionUseCash");
     let cashBasisAmount = 0;
+    let newFx = null;
+
+    if (!Number.isFinite(amount) || amount <= 0) {
+      showToast("Enter a positive THB amount.");
+      return;
+    }
+
+    if (holding && activityAffectsHolding(type) && fundNavCurrency(holding) !== "THB") {
+      const nativeAmount = Number(getValue("transactionNativeAmount"));
+      if (!Number.isFinite(nativeAmount) || nativeAmount <= 0) {
+        showToast(`Enter the actual ${fundNavCurrency(holding)} amount from your confirmation.`);
+        return;
+      }
+      newFx = { currency: fundNavCurrency(holding), nativeAmount, rate: amount / nativeAmount };
+    }
 
     if (type === "Switch") {
       const fromSymbol = getValue("transactionAsset");
@@ -3480,12 +3626,17 @@ function handleConfirm(event) {
         showToast("Pick two different funds to switch between.");
         return;
       }
-      if (amount <= 0 || switchOutNav <= 0 || destBuyingNav <= 0) {
+      if (![switchOutNav, destBuyingNav].every((value) => Number.isFinite(value) && value > 0)) {
         showToast("Switch needs an invested amount, switch-out NAV, and destination buying NAV.");
         return;
       }
 
-      newSwitchData = buildSwitchData(source, dest, amount, switchOutNav, destBuyingNav);
+      const conversion = switchConversion(source, dest, amount, getValue("transactionSourceAmount"), getValue("transactionDestAmount"));
+      if (conversion === false) {
+        showToast("Enter the actual foreign-currency amounts from your switch confirmation.");
+        return;
+      }
+      newSwitchData = buildSwitchData(source, dest, amount, switchOutNav, destBuyingNav, conversion);
       asset = fromSymbol;
     } else if (type === "Dividend") {
       if (!asset || !holding || amount <= 0) {
@@ -3525,7 +3676,7 @@ function handleConfirm(event) {
 
       if (type === "Buy" && fromCash) {
         const cashContext = cashIdentity(holding);
-        if (amount > cashBalance(cashContext) + 0.005) {
+        if (state.action !== "Edit Transaction" && amount > cashBalance(cashContext) + 0.005) {
           showToast(`${holding.bank} ${holding.port} cash is not high enough for this buy.`);
           return;
         }
@@ -3571,6 +3722,8 @@ function handleConfirm(event) {
       };
       if (type === "Switch") next.switch = newSwitchData;
       else delete next.switch;
+      if (newFx) next.fx = { ...newFx };
+      else delete next.fx;
       if (type !== "Dividend") {
         delete next.grossAmount;
         delete next.taxAmount;
@@ -3616,6 +3769,7 @@ function handleConfirm(event) {
         return;
       }
 
+      Object.keys(activity).forEach((key) => delete activity[key]);
       Object.assign(activity, nextActivity);
       state.editingActivityId = "";
       savePortfolio();

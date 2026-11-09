@@ -50,3 +50,13 @@ node --check sw.js
 node --test tests/*.test.js
 git diff --check
 ```
+
+## USD fund orders
+
+Use **Add order** for SCBUSDYIELD as well as THB funds. Its holding must have **NAV currency = USD**.
+
+- **Buy / Sell:** enter the actual fund units, the actual **THB** paid/received, and the actual **USD** invested/received from your confirmation. For example, 10 units, USD 100, and THB 3,500 records a conversion of 35 THB/USD. A cash-funded buy uses THB 3,500 of Cash.
+- **Switch:** enter the THB switch value, the actual USD amount for each USD leg, and each fund's NAV in its own currency. Units are calculated from each leg's native amount divided by its native NAV. Check the units preview against your confirmation; use the destination investment after any switch fee.
+- Activity stores both currencies and the implied conversion. Editing or deleting the order updates holdings and cash. The weighted purchase FX preserves historical THB cost; current value continues to use the holding's current FX. You can still enter the latest bank-reported THB value in the holdings table to update valuation FX.
+
+Existing balances and old activities are not replayed or converted automatically. If a past transaction was already entered by manually adjusting holdings, adding it again will double-count it; reconcile that balance before recording the missing order.
