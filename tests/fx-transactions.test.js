@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import test from 'node:test';
 
-const source = readFileSync(new URL('../app.js', import.meta.url), 'utf8').split('\ninitDates();')[0];
+const source = readFileSync(new URL('../app.js', import.meta.url), 'utf8').split('\nloadPortfolio();')[0];
 const usd = { symbol: 'SCBUSDYIELD', bank: 'SCB', port: 'Main', navCurrency: 'USD',
   units: 100, purchaseAmount: 1000, buyingNav: 10, currentNav: 10, fxRate: 36, buyFxRate: 32 };
 const thb = { symbol: 'THB-FUND', bank: 'SCB', port: 'Main', units: 10000, purchaseAmount: 100000, buyingNav: 10, currentNav: 10 };
@@ -274,4 +274,32 @@ test('editing a switch can replace its new destination, and deleting it restores
   assert.equal(s.run('holdings.length'), 3);
   assert.equal(s.run('activities.length'), 0);
   near(s.run('holdings[1].units'), 10000);
+});
+
+test('deleting an order or a fund offers an undo that restores every record, unless the portfolio changed since', () => {
+  const s = session();
+  s.confirm(buyFields);
+  s.run('var lastToast; showToast = (text, options) => { lastToast = { text, options }; };');
+  const records = () => s.run('JSON.stringify({ holdings, activities, portfolioSnapshots, anchor: state.capitalAnchor })');
+
+  const beforeOrderDelete = records();
+  s.run(`state.action = 'Edit Transaction'; state.editingActivityId = activities[0].id; deleteEditingActivity()`);
+  assert.equal(s.run('activities.length'), 0);
+  assert.equal(s.run('lastToast.options.actionLabel'), 'Undo');
+  s.run('lastToast.options.onAction()');
+  assert.equal(records(), beforeOrderDelete);
+  assert.match(s.run('lastToast.text'), /restored/);
+
+  const beforeFundDelete = records();
+  s.run(`state.action = 'Edit Asset'; state.editingSymbol = 'SCBUSDYIELD'; deleteEditingFund()`);
+  assert.equal(s.run('holdings.length'), 2);
+  assert.equal(s.run('activities.length'), 0);
+  assert.match(s.run('lastToast.text'), /SCBUSDYIELD deleted, with 1 order\./);
+  s.run('lastToast.options.onAction()');
+  assert.equal(records(), beforeFundDelete);
+
+  s.run(`state.action = 'Edit Asset'; state.editingSymbol = 'SCBUSDYIELD'; deleteEditingFund()`);
+  s.run('var undo = lastToast.options.onAction; holdings[0].units += 1; undo()');
+  assert.match(s.run('lastToast.text'), /no longer be undone/);
+  assert.equal(s.run('holdings.length'), 2);
 });

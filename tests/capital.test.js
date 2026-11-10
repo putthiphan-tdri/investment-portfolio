@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import test from 'node:test';
 
-const source = readFileSync(new URL('../app.js', import.meta.url), 'utf8').split('\ninitDates();')[0];
+const source = readFileSync(new URL('../app.js', import.meta.url), 'utf8').split('\nloadPortfolio();')[0];
 const key = 'myFundsPortfolio.v1';
 const order = (id, date, overrides = {}) => ({ id, date, createdAt: '2026-09-24T10:00:00.000Z',
   type: 'Buy', asset: 'TEST', units: '+10.0000', amount: 100, ...overrides });

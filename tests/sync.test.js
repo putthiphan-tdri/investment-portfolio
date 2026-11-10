@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import test from 'node:test';
-const source = readFileSync(new URL('../app.js', import.meta.url), 'utf8').split('\ninitDates();')[0];
+const source = readFileSync(new URL('../app.js', import.meta.url), 'utf8').split('\nloadPortfolio();')[0];
 const KEY = 'myFundsPortfolio.v1';
 const payload = (n) => ({holdings:[{symbol:'TEST',units:n}],activities:[],portfolioSnapshots:[],savedAt:'2026-09-22T00:00:00Z'});
 function session(local, server) {
@@ -71,7 +71,7 @@ test('display preferences preserve timestamps and do not schedule uploads',()=>{
  assert.equal(s.local().savedAt,'2026-09-22T00:00:00Z');assert.equal(s.local().sync.dirty,false);
 });
 test('startup and unload do not save or upload the local portfolio',()=>{
- const startup=readFileSync(new URL('../app.js',import.meta.url),'utf8').split('\ninitDates();')[1];
+ const startup=readFileSync(new URL('../app.js',import.meta.url),'utf8').split('\nloadPortfolio();')[1];
  assert.doesNotMatch(startup,/savePortfolio|beforeunload/);
 });
 test('edits during an upload remain pending against the newly acknowledged version',async()=>{

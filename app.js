@@ -35,6 +35,7 @@ const state = {
   privacyMode: false,
   chartMode: "pnl",
   holdingsView: "overview",
+  pnlShowAll: false,
   // { date, amount }: capital invested as of `date`. Later capital flows are added
   // on top, so internal moves (sells into cash, cash buys, switches) never shift it.
   capitalAnchor: null,
@@ -211,7 +212,7 @@ function openCloudSyncDialog() {
   document.querySelector("#deleteFund").hidden = true;
   fields.className = "dialog-fields";
   fields.innerHTML = fieldMarkup([
-    { id: "syncKeyInput", label: "Sync key", value: cloudKey() },
+    { id: "syncKeyInput", label: "Sync key", kind: "secret", value: cloudKey() },
   ]);
 
   const status = document.createElement("p");
@@ -233,7 +234,7 @@ function openCloudSyncDialog() {
     });
     fields.append(button);
   }
-  if (dialog.showModal) dialog.showModal();
+  presentActionDialog();
 }
 
 function applyStoredPayload(parsed) {
@@ -1330,6 +1331,10 @@ function bindAssetFormHelpers() {
   const categoryInput = document.querySelector("#assetCategory");
   const currencyInput = document.querySelector("#assetNavCurrency");
 
+  if (state.action === "Add Asset") {
+    document.querySelector("#confirmAction").textContent = categoryInput?.value === CASH_CATEGORY ? "Add Cash" : "Add Fund";
+  }
+
   categoryInput?.addEventListener("change", () => {
     const fields = document.querySelector("#dialogFields");
     if (!fields) return;
@@ -1338,6 +1343,7 @@ function bindAssetFormHelpers() {
       ? cashAssetFieldMarkup({ ...values, ...readCashFormValues() })
       : fundFieldMarkup({ ...values, category: categoryInput.value });
     bindAssetFormHelpers();
+    document.querySelector("#assetCategory")?.focus();
   });
 
   currencyInput?.addEventListener("change", () => {
@@ -1346,6 +1352,7 @@ function bindAssetFormHelpers() {
     const values = readAssetFormValues();
     fields.innerHTML = fundFieldMarkup(values, currencyInput.value);
     bindAssetFormHelpers();
+    document.querySelector("#assetNavCurrency")?.focus();
   });
 }
 
@@ -1562,12 +1569,12 @@ function renderHoldings() {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "holding-expand";
-    button.textContent = "Show details";
+    button.textContent = "Details";
     button.setAttribute("aria-label", `Show details for ${row.dataset.symbol}`);
     button.setAttribute("aria-expanded", "false");
     button.addEventListener("click", () => {
       const expanded = row.classList.toggle("holding-expanded");
-      button.textContent = expanded ? "Less detail" : "Show details";
+      button.textContent = expanded ? "Less" : "Details";
       button.setAttribute("aria-expanded", String(expanded));
       button.setAttribute("aria-label", `${expanded ? "Hide" : "Show"} details for ${row.dataset.symbol}`);
     });
@@ -2021,10 +2028,13 @@ function applyHoldingEffect(activity, newDestination) {
   return applyOrderToHolding(holding, activity.type, activityUnitCount(activity), Number(activity.amount || 0), 1);
 }
 
+// Cash goes first: it is the step that fails when the balance was spent, and putting it back
+// is exact. Re-applying a sale to the holding instead would take its cost from today's
+// average, which later orders have moved.
 function reverseActivityEffect(activity) {
-  if (!reverseHoldingEffect(activity)) return false;
-  if (!applyCashEffect(activity, -1)) {
-    applyHoldingEffect(activity);
+  if (!applyCashEffect(activity, -1)) return false;
+  if (!reverseHoldingEffect(activity)) {
+    applyCashEffect(activity, 1);
     return false;
   }
   return true;
@@ -2051,16 +2061,21 @@ function removeUnusedSwitchDestination(data) {
   if (!hasActivity) holdings.splice(index, 1);
 }
 
+// Gridlines hug the data: the finest round step that needs at most `count`
+// intervals, running from the gridline at or below the minimum to the first
+// one at or above the maximum. Nothing is added beyond that.
 function computeNiceTicks(dataMin, dataMax, count = 5) {
   const range = Math.max(dataMax - dataMin, 1);
-  const rawStep = range / (count - 1);
-  const magnitude = Math.pow(10, Math.floor(Math.log10(rawStep)));
-  const niceMultipliers = [1, 2, 2.5, 5, 10];
-  const multiplier = niceMultipliers.find((m) => m * magnitude >= rawStep) ?? 10;
-  const step = multiplier * magnitude;
-  const niceMin = Math.floor(dataMin / step) * step;
-  const intervals = Math.max(count - 1, Math.ceil((dataMax - niceMin) / step));
-  return Array.from({ length: intervals + 1 }, (_, i) => niceMin + (intervals - i) * step);
+  const magnitude = Math.pow(10, Math.floor(Math.log10(range / count)));
+  const bounds = (step) => {
+    const low = Math.floor(dataMin / step);
+    return { low, high: Math.max(Math.ceil(dataMax / step), low + 1) };
+  };
+  const step = [1, 2, 2.5, 5, 10, 20, 25, 50, 100]
+    .map((multiplier) => multiplier * magnitude)
+    .find((candidate) => { const { low, high } = bounds(candidate); return high - low <= count; }) ?? magnitude * 100;
+  const { low, high } = bounds(step);
+  return Array.from({ length: high - low + 1 }, (_, i) => (high - i) * step);
 }
 
 function rangeStartKey(range, endKey) {
@@ -2254,6 +2269,148 @@ function bindPerformanceChartTooltip(svg) {
   });
 }
 
+// Return and risk come from recorded daily NAV movement only, so deposits,
+// withdrawals and sales never count as performance. Days without a recorded
+// figure are skipped rather than treated as zero.
+function returnRiskMetrics(snapshots) {
+  const days = [];
+  let missing = 0;
+  (snapshots || []).forEach((snapshot) => {
+    const amount = recordedDailyPnl(snapshot);
+    if (amount === null) {
+      if (snapshot && !snapshot.carriedForward) missing += 1;
+      return;
+    }
+    const storedPct = snapshot.dayPnlDeltaPct == null || snapshot.dayPnlDeltaPct === "" ? NaN : Number(snapshot.dayPnlDeltaPct);
+    const base = Number(snapshot.totalFundValue) - amount;
+    const pctValue = Number.isFinite(storedPct) ? storedPct : base > 0 ? (amount / base) * 100 : 0;
+    days.push({ date: snapshot.date, amount, pct: pctValue });
+  });
+  if (days.length === 0) return null;
+
+  let index = 1, marketPnl = 0;
+  let peak = { index: 1, marketPnl: 0, date: null };
+  let drawdown = { pct: 0, amount: 0, fromDate: null, toDate: null };
+  let best = days[0], worst = days[0];
+  days.forEach((day) => {
+    index *= 1 + day.pct / 100;
+    marketPnl += day.amount;
+    if (day.amount > best.amount) best = day;
+    if (day.amount < worst.amount) worst = day;
+    if (index >= peak.index) peak = { index, marketPnl, date: day.date };
+    const decline = (index / peak.index - 1) * 100;
+    if (decline < drawdown.pct) drawdown = { pct: decline, amount: marketPnl - peak.marketPnl, fromDate: peak.date, toDate: day.date };
+  });
+
+  return {
+    days: days.length,
+    missing,
+    firstDate: days[0].date,
+    lastDate: days.at(-1).date,
+    returnPct: (index - 1) * 100,
+    marketPnl,
+    best,
+    worst,
+    upDays: days.filter((day) => day.amount > 0).length,
+    downDays: days.filter((day) => day.amount < 0).length,
+    drawdown,
+  };
+}
+
+// Proceeds minus the cost removed, for sales and switches that recorded their
+// cost. A sale without a recorded cost is counted as unknown, never as zero.
+function realizedPnl(startKey, endKey) {
+  const result = { amount: 0, counted: 0, unknown: 0 };
+  activities.forEach((activity) => {
+    if (activity.type !== "Sell" && activity.type !== "Switch") return;
+    const date = dateKeyFromActivityDate(activity.date);
+    if ((startKey && date < startKey) || (endKey && date > endKey)) return;
+
+    let gain = null;
+    if (activity.type === "Switch") {
+      const cost = Number(activity.switch?.sourceCostRemovedTHB ?? activity.switch?.sourceCostRemoved);
+      const proceeds = Number(activity.switch?.amount ?? activity.amount);
+      if (cost > 0.005 && Number.isFinite(proceeds)) gain = proceeds - cost;
+    } else {
+      const proceeds = Number(activity.amount);
+      const cost = Number(activity.cashBasisAmount);
+      if (cost > 0.005 && Number.isFinite(proceeds)) {
+        gain = proceeds - cost;
+      } else {
+        const closed = archivedRawHoldings().find((holding) => holding.symbol === activity.asset
+          && holding.archivedDate === date
+          && Math.abs(Number(holding.archivedSaleAmount) - proceeds) < 0.01);
+        const closedCost = closed ? Number(closed.archivedSaleAmount) - Number(closed.archivedPnl) : 0;
+        if (closedCost > 0.005) gain = Number(closed.archivedPnl);
+      }
+    }
+
+    if (gain === null || !Number.isFinite(gain)) {
+      result.unknown += 1;
+    } else {
+      result.amount += gain;
+      result.counted += 1;
+    }
+  });
+  return result;
+}
+
+function renderReturnRisk(range, startKey, endKey, sourceSnapshots) {
+  const container = document.querySelector("#returnRisk");
+  if (!container) return;
+  const metrics = returnRiskMetrics(sourceSnapshots.filter((snapshot) => snapshot.date >= startKey && snapshot.date <= endKey));
+  const realized = realizedPnl(range === "ALL" ? null : startKey, endKey);
+  const tone = (value) => value > 0.005 ? "green" : value < -0.005 ? "red" : "neutral";
+  const signedPct = (value) => Math.abs(value) < 0.005 ? "0.00%" : `${value > 0 ? "+" : "−"}${Math.abs(value).toFixed(2)}%`;
+  const privateMoney = (value) => `<span class="private-value">${signedMoney(value, 0)}</span>`;
+  const shortDate = (dateKey) => parseDateKey(dateKey).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  const plural = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
+  // What each figure means stays out of the layout: it is the tile's hover text.
+  // Labels are plain words for standard measures: gain/loss is market P&L with the
+  // time-weighted return beside it, and the biggest dip is the maximum drawdown.
+  const meaning = {
+    "Gain / loss": "What the market added or took away in this range: the sum of each recorded day's move. The percentage chains those daily moves, so deposits, withdrawals and sales do not count.",
+    "Biggest dip": "The largest fall from a high point to a later low in this range, from market moves only. Also called maximum drawdown.",
+    "Best day": "Largest recorded daily move in this range.",
+    "Worst day": "Smallest recorded daily move in this range.",
+    "Up days": "Recorded days in this range that ended with a gain.",
+    "Profit from sales": "Proceeds minus cost for sales and switches that recorded their cost. Also called realized P&L.",
+  };
+  const tile = (label, value, valueTone, sub) => `<div class="return-risk-item" title="${htmlAttr(meaning[label])}"><span>${htmlAttr(label)}</span><strong class="${valueTone}">${value}</strong><small>${sub}</small></div>`;
+  const empty = (label, sub) => tile(label, "—", "neutral", sub);
+
+  const sales = realized.counted + realized.unknown;
+  const realizedTile = realized.counted > 0
+    ? tile("Profit from sales", privateMoney(realized.amount), tone(realized.amount), realized.unknown > 0
+      ? `${realized.counted} of ${plural(sales, "sale")} costed`
+      : plural(sales, "sale"))
+    : empty("Profit from sales", sales > 0 ? `${plural(sales, "sale")}, no cost` : "No sales");
+
+  let caption, tiles;
+  if (metrics) {
+    caption = (metrics.firstDate === metrics.lastDate ? readableDate(metrics.lastDate) : `${shortDate(metrics.firstDate)} – ${readableDate(metrics.lastDate)}`)
+      + (metrics.missing > 0 ? ` · ${plural(metrics.missing, "day")} not recorded` : "");
+    const { drawdown, best, worst } = metrics;
+    const drawdownSpan = `<span class="return-risk-span">${drawdown.fromDate ? `${shortDate(drawdown.fromDate)} – ` : "to "}${shortDate(drawdown.toDate)}</span>`;
+    const flatDays = metrics.days - metrics.upDays - metrics.downDays;
+    tiles = tile("Gain / loss", privateMoney(metrics.marketPnl), tone(metrics.marketPnl), `${signedPct(metrics.returnPct)} return`)
+      + (drawdown.pct < -0.005
+        ? tile("Biggest dip", privateMoney(drawdown.amount), "red", `${drawdownSpan} · ${signedPct(drawdown.pct)}`)
+        : tile("Biggest dip", "None", "neutral", "No fall from a high"))
+      + (metrics.days > 1
+        ? tile("Best day", privateMoney(best.amount), tone(best.amount), `${shortDate(best.date)} · ${signedPct(best.pct)}`)
+          + tile("Worst day", privateMoney(worst.amount), tone(worst.amount), `${shortDate(worst.date)} · ${signedPct(worst.pct)}`)
+        : empty("Best day", "Needs two days") + empty("Worst day", "Needs two days"))
+      + tile("Up days", `${metrics.upDays} of ${metrics.days}`, "neutral", `${metrics.downDays} down${flatDays > 0 ? ` · ${flatDays} flat` : ""}`);
+  } else {
+    caption = "No daily figures in this range";
+    tiles = ["Gain / loss", "Biggest dip", "Best day", "Worst day", "Up days"].map((label) => empty(label, "Not recorded")).join("");
+  }
+
+  const head = `<div class="return-risk-head"><h2>Return &amp; risk</h2><p>${caption}</p></div>`;
+  container.innerHTML = !metrics && sales === 0 ? head : `${head}<div class="return-risk-grid">${tiles}${realizedTile}</div>`;
+}
+
 function chartLabels() {
   return hasCapitalTracking()
     ? { pnl: "Total P&L", cost: "Capital invested" }
@@ -2273,14 +2430,14 @@ function renderChart(range = "1W") {
       ? "Value minus capital invested at each date. Includes realized gains and dividends; only money added or withdrawn moves the capital line."
       : "Value minus cost of holdings at each date. Excludes realized gains and dividends; selling a holding can reduce this balance."
     : "Recorded daily NAV movement. Dates without a recorded daily figure are left blank.";
-  document.querySelector("#chartDescription").textContent = description;
   document.querySelector(".chart-legend").innerHTML = mode === "value"
-    ? `<span><i class="legend-line solid"></i> Portfolio value</span><span><i class="legend-line dashed"></i> ${seriesLabels.cost}</span>`
-    : '<span><i class="legend-dot profit"></i> Gain</span><span><i class="legend-dot loss"></i> Loss</span><span>Zero = break-even</span>';
+    ? `<span><i class="legend-line solid"></i> Portfolio value</span><span><i class="legend-area"></i> ${seriesLabels.cost}</span>`
+    : '<span><i class="legend-dot profit"></i> Gain</span><span><i class="legend-dot loss"></i> Loss</span>';
   document.querySelectorAll("[data-chart-mode]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.chartMode === mode)));
   document.querySelectorAll("[data-range]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.range === range)));
   svg.setAttribute("aria-label", `${name}, ${range}. Focus a data point and use left or right arrow keys to explore.`);
   const { sourceSnapshots = [], startKey, endKey } = snapshotsForRange(range);
+  renderReturnRisk(range, startKey, endKey, sourceSnapshots);
   const observations = performanceObservations(carryForwardSnapshotsForRange(sourceSnapshots, startKey, endKey), mode);
   const available = observations.filter((item) => item.chartValue !== null && Number.isFinite(item.chartValue));
   const last = available.at(-1);
@@ -2289,9 +2446,9 @@ function renderChart(range = "1W") {
   const high = available.length ? Math.max(...available.map((p) => p.chartValue)) : 0;
   const low = available.length ? Math.min(...available.map((p) => p.chartValue)) : 0;
   insights.innerHTML = last ? `
-    <div class="chart-insight chart-insight-main"><span>${name}${mode === "daily" ? " · latest recorded" : " · at period end"}</span><strong class="${tone(last.chartValue)}">${privateMoney(last.chartValue)}</strong><small>${readableDate(last.date)}${last.carriedForward ? " · carried forward" : ""}</small></div>
-    <div class="chart-insight"><span>Period high</span><strong class="${tone(high)}">${privateMoney(high)}</strong></div>
-    <div class="chart-insight"><span>Period low</span><strong class="${tone(low)}">${privateMoney(low)}</strong></div>`
+    <div class="chart-insight chart-insight-main"><span>${name} <span class="info-dot" tabindex="0" role="button" aria-label="What does ${htmlAttr(name)} show?" aria-describedby="chartInfoTooltip">i<span class="info-tooltip" id="chartInfoTooltip">${htmlAttr(description)}</span></span></span><strong class="${tone(last.chartValue)}">${privateMoney(last.chartValue)}</strong><small>${readableDate(last.date)}${last.carriedForward ? " · carried forward" : ""}</small></div>
+    <div class="chart-insight"><span>High</span><strong class="${tone(high)}">${privateMoney(high)}</strong></div>
+    <div class="chart-insight"><span>Low</span><strong class="${tone(low)}">${privateMoney(low)}</strong></div>`
     : `<div class="chart-insight chart-insight-main"><span>${name}</span><strong class="neutral">No recorded data</strong><small>${readableDate(startKey)} – ${readableDate(endKey)}</small></div>`;
   const rect = svg.closest(".line-chart").getBoundingClientRect();
   const chartWidth = Math.round(Math.max(rect.width, 240));
@@ -2323,7 +2480,11 @@ function renderChart(range = "1W") {
   const zeroLine = mode === "value" ? "" : `<line class="chart-zero" x1="${left}" y1="${zeroY}" x2="${left + width}" y2="${zeroY}"/>`;
   let plot = "";
   if (mode === "value") {
-    plot = `<path class="cost-line" d="${snapshotPath(available, "totalPaid", min, max, startMs, endMs, width, height, left, top)}"/><path class="portfolio-line" d="${path}"/>`;
+    // Capital is a soft filled area and value a line on top, so the two stay
+    // readable when they run a percent or two apart.
+    const capitalPath = snapshotPath(available, "totalPaid", min, max, startMs, endMs, width, height, left, top);
+    const floor = (top + height).toFixed(1);
+    plot = `<path class="capital-area" d="${capitalPath} L${x(last.date).toFixed(1)},${floor} L${x(available[0].date).toFixed(1)},${floor} Z"/><path class="capital-edge" d="${capitalPath}"/><path class="portfolio-line" d="${path}"/>`;
   } else if (mode === "pnl") {
     const area = `${path} L${x(last.date)},${zeroY} L${x(available[0].date)},${zeroY} Z`;
     plot = `<defs><clipPath id="profitClip"><rect x="${left}" y="${top}" width="${width}" height="${Math.max(0, zeroY - top)}"/></clipPath><clipPath id="lossClip"><rect x="${left}" y="${zeroY}" width="${width}" height="${Math.max(0, top + height - zeroY)}"/></clipPath></defs>
@@ -2331,13 +2492,16 @@ function renderChart(range = "1W") {
       <path d="${path}" class="pnl-line profit" clip-path="url(#profitClip)"/><path d="${path}" class="pnl-line loss" clip-path="url(#lossClip)"/>`;
   }
   const barWidth = Math.max(1, Math.min(30, width / ((endMs - startMs) / 86400000 + 1) * .65));
+  // A dot per day turns a long line into a string of beads. Past 40 points only
+  // the latest dot is drawn; the rest appear on hover or keyboard focus.
+  const crowded = available.length > 40;
   const points = available.map((point, index) => {
     const px = x(point.date), py = y(point.chartValue);
     const daily = recordedDailyPnl(point);
     const pointTone = point.chartValue > 0 ? "profit" : point.chartValue < 0 ? "loss" : "flat";
     const label = `${readableDate(point.date)}, ${name} ${state.privacyMode ? "values hidden" : money(point.chartValue)}, ${point.carriedForward ? "carried forward" : "recorded"}`;
     const bar = mode === "daily" ? `<rect class="daily-bar ${pointTone}" x="${px - barWidth / 2}" y="${Math.min(py, zeroY)}" width="${barWidth}" height="${Math.max(2, Math.abs(py - zeroY))}" rx="2"/>` : "";
-    return `<g class="chart-point-target" data-chart-point data-date="${point.date}" data-amount="${point.chartValue}" data-pnl="${point.pnl}" data-pnl-pct="${point.pnlPct}" data-cost="${point.totalPaid}" data-daily="${daily ?? ""}" data-source="${point.carriedForward ? point.sourceDate : ""}" tabindex="${index === available.length - 1 ? 0 : -1}" role="img" aria-label="${htmlAttr(label)}">${bar}<circle class="chart-point-hit" cx="${px}" cy="${py}" r="14"/><circle class="chart-observation ${mode === "value" ? "value" : pointTone}${point.carriedForward ? " carried" : ""}" cx="${px}" cy="${py}" r="${mode === "daily" ? 0 : available.length > 40 && index !== available.length - 1 ? 1.5 : 3.5}"/></g>`;
+    return `<g class="chart-point-target" data-chart-point data-date="${point.date}" data-amount="${point.chartValue}" data-pnl="${point.pnl}" data-pnl-pct="${point.pnlPct}" data-cost="${point.totalPaid}" data-daily="${daily ?? ""}" data-source="${point.carriedForward ? point.sourceDate : ""}" tabindex="${index === available.length - 1 ? 0 : -1}" role="img" aria-label="${htmlAttr(label)}">${bar}<circle class="chart-point-hit" cx="${px}" cy="${py}" r="14"/><circle class="chart-observation ${mode === "value" ? "value" : pointTone}${point.carriedForward ? " carried" : ""}${crowded && index !== available.length - 1 ? " quiet" : ""}" cx="${px}" cy="${py}" r="${mode === "daily" ? 0 : 3.5}"/></g>`;
   }).join("");
   svg.innerHTML = axis + dates + zeroLine + plot + points;
   bindPerformanceChartTooltip(svg);
@@ -2531,10 +2695,16 @@ function renderValueCalendar() {
   `;
 }
 
+// Rows per column in P&L by fund before "Show all": a wide panel shows the
+// first, a panel too narrow for two columns shows the second (set in CSS).
+const PNL_LIMIT = 5;
+const PNL_NARROW_LIMIT = 3;
+
 function renderBreakdown() {
   const total = totals();
   const contributionList = total.list.filter((item) => !isCashHolding(item));
   if (contributionList.length === 0) {
+    document.querySelector("#pnlToggle").hidden = true;
     document.querySelector(".pnl-list").innerHTML = `
       <div class="empty-panel-state">
         <strong>No P&L contribution yet</strong>
@@ -2544,21 +2714,51 @@ function renderBreakdown() {
     return;
   }
 
-  const maxContribution = Math.max(...contributionList.map((item) => Math.abs(item.pnlBaht)), 1);
-  const sorted = [...contributionList].sort((a, b) => b.pnlBaht - a.pnlBaht);
+  // Losers and gainers sit side by side, biggest first, on one shared scale, so
+  // both ends of the ranking are visible without scrolling.
+  const isFlat = (item) => Math.abs(item.pnlBaht) < 0.005;
+  const gains = contributionList.filter((item) => item.pnlBaht > 0 && !isFlat(item)).sort((a, b) => b.pnlBaht - a.pnlBaht);
+  const losses = contributionList.filter((item) => item.pnlBaht < 0 && !isFlat(item)).sort((a, b) => a.pnlBaht - b.pnlBaht);
+  const flat = contributionList.filter(isFlat);
+  const sum = (list) => list.reduce((amount, item) => amount + item.pnlBaht, 0);
+  const largest = Math.max(...contributionList.map((item) => Math.abs(item.pnlBaht)), 1);
+  const longest = Math.max(gains.length + flat.length, losses.length);
+  const showAll = state.pnlShowAll && longest > PNL_NARROW_LIMIT;
+  const privateMoney = (value) => `<span class="private-value">${signedMoney(value, 0)}</span>`;
+  const net = sum(gains) + sum(losses);
 
-  document.querySelector(".pnl-list").innerHTML = sorted.map((item) => `
-    <button class="pnl-row" data-fund-insight="${htmlAttr(item.symbol)}">
-      <span class="pnl-fund">
-        <b>${item.symbol}</b>
-        <small>${item.category}</small>
-      </span>
-      <span class="pnl-track" aria-hidden="true">
-        <i class="${item.pnlBaht >= 0 ? "positive" : "negative"}" style="width:${Math.max((Math.abs(item.pnlBaht) / maxContribution) * 50, 3.5).toFixed(2)}%"></i>
-      </span>
-      <strong class="${item.pnlBaht >= 0 ? "green" : "red"}"><span class="private-value">${money(item.pnlBaht)}</span><small>${pct(item.pnlPct)}</small></strong>
-    </button>
-  `).join("");
+  const row = (item, tone) => `
+    <button class="pnl-row" type="button" data-fund-insight="${htmlAttr(item.symbol)}" title="${htmlAttr(`${item.symbol} · ${item.category}`)}">
+      <span class="pnl-fund">${htmlAttr(item.symbol)}</span>
+      <span class="pnl-amount">${privateMoney(item.pnlBaht)}</span>
+      <span class="pnl-pct">${pct(item.pnlPct)}</span>
+      <span class="pnl-track" aria-hidden="true"><i class="${tone}" style="width:${((Math.abs(item.pnlBaht) / largest) * 100).toFixed(2)}%"></i></span>
+    </button>`;
+  const column = (name, heading, tone, list, emptyText) => `
+    <div class="pnl-column ${name}" role="group" aria-label="${heading}">
+      <h3>${heading}</h3>
+      ${list.length ? (showAll ? list : list.slice(0, PNL_LIMIT)).map((item) => row(item, tone(item))).join("") : `<p class="pnl-none">${emptyText}</p>`}
+    </div>`;
+  const stat = (name, label, value, tone) => `<div class="pnl-stat ${name}"><span>${label}</span><strong class="${tone}">${value}</strong></div>`;
+
+  document.querySelector(".pnl-list").innerHTML = `
+    <div class="pnl-summary">
+      ${stat("down", `${losses.length} down`, privateMoney(sum(losses)), losses.length ? "red" : "")}
+      ${stat("up", `${gains.length} up`, privateMoney(sum(gains)), gains.length ? "green" : "")}
+      ${stat("net", `Net${flat.length ? ` · ${flat.length} flat` : ""}`, privateMoney(net), net > 0.005 ? "green" : net < -0.005 ? "red" : "")}
+    </div>
+    <div class="pnl-columns${showAll ? " is-all" : ""}">
+      ${column("losses", showAll ? "Losses" : "Biggest losses", () => "negative", losses, "No fund is down.")}
+      ${column("gains", showAll ? "Gains" : "Biggest gains", (item) => isFlat(item) ? "flat" : "positive", [...gains, ...flat], "No fund is up.")}
+    </div>`;
+
+  // The toggle is needed on a narrow panel sooner than on a wide one, which
+  // shows more rows per column before anything is cut off.
+  const toggle = document.querySelector("#pnlToggle");
+  toggle.hidden = longest <= PNL_NARROW_LIMIT;
+  toggle.className = `pnl-toggle${longest <= PNL_LIMIT ? " narrow-only" : ""}`;
+  toggle.textContent = showAll ? "Show fewer" : `Show all ${contributionList.length}`;
+  toggle.setAttribute("aria-expanded", String(showAll));
 }
 
 function renderChannelExposure() {
@@ -2567,7 +2767,7 @@ function renderChannelExposure() {
 
   if (bankGroups.length === 0) {
     document.querySelector(".events-panel").innerHTML = `
-      <h2>Bank P&L Summary</h2>
+      <h2>P&L by bank</h2>
       <div class="empty-panel-state">
         <strong>No bank summary yet</strong>
         <span>Bank-level value, cash, and P&L will appear after you add funds.</span>
@@ -2577,13 +2777,12 @@ function renderChannelExposure() {
   }
 
   document.querySelector(".events-panel").innerHTML = `
-    <h2>Bank P&L Summary</h2>
+    <h2>P&L by bank</h2>
     <div class="bank-summary-scroll">
       <div class="bank-pnl-list">
         ${bankGroups.map((group) => {
           const pnlClass = group.pnl > 0 ? "green" : group.pnl < 0 ? "red" : "neutral";
-          const cashLabel = group.cashValue > 0 ? `Cash ${money(group.cashValue)}` : "No cash";
-          const assetLabel = `${group.fundCount} fund${group.fundCount === 1 ? "" : "s"} · ${cashLabel}`;
+          const assetLabel = `${group.fundCount} fund${group.fundCount === 1 ? "" : "s"}${group.cashValue > 0 ? ` · Cash ${money(group.cashValue)}` : ""}`;
           const exposurePct = total.fundValue > 0 ? (group.totalValue / total.fundValue) * 100 : 0;
           return `
             <button class="bank-pnl-row" data-bank-insight="${htmlAttr(group.bank)}">
@@ -2592,14 +2791,13 @@ function renderChannelExposure() {
                 <small>${assetLabel}</small>
               </span>
               <span class="bank-pnl-values">
-                <strong><span class="private-value">${money(group.totalValue)}</span><small>Total value</small></strong>
+                <strong><span class="private-value">${money(group.totalValue)}</span><small>${exposurePct.toFixed(1)}% of assets</small></strong>
                 <strong class="${pnlClass}"><span class="private-value">${money(group.pnl)}</span><small>${pct(group.pnlPct)}</small></strong>
               </span>
-              <span class="bank-exposure-meter">
-                <span class="bank-exposure-track" aria-hidden="true">
+              <span class="bank-exposure-meter" aria-hidden="true">
+                <span class="bank-exposure-track">
                   <i style="width:${Math.max(exposurePct, 2).toFixed(1)}%"></i>
                 </span>
-                <small>${exposurePct.toFixed(1)}% of assets</small>
               </span>
             </button>
           `;
@@ -2621,12 +2819,126 @@ function renderAll(range = document.querySelector(".range-tabs .active")?.datase
   bindDynamicButtons();
 }
 
-function showToast(message) {
+// A toast can carry one follow-up action (Undo). It then stays up longer, waits while it
+// is hovered or focused, and the action is also reachable with Ctrl/Cmd+Z.
+function showToast(message, { actionLabel = "", onAction = null, duration = 2600 } = {}) {
   const toast = document.querySelector("#toast");
+  const hide = () => {
+    window.clearTimeout(showToast.timeout);
+    toast.classList.remove("show", "has-action");
+    toast.querySelector("button")?.remove();
+    showToast.action = null;
+  };
+  const hideLater = (delay) => {
+    window.clearTimeout(showToast.timeout);
+    showToast.timeout = window.setTimeout(hide, delay);
+  };
+
+  hide();
   toast.textContent = message;
+  if (onAction) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "toast-action";
+    button.textContent = actionLabel;
+    showToast.action = () => {
+      hide();
+      onAction();
+    };
+    button.addEventListener("click", showToast.action);
+    toast.append(button);
+    toast.classList.add("has-action");
+  }
+  toast.onpointerenter = toast.onfocusin = () => window.clearTimeout(showToast.timeout);
+  toast.onpointerleave = toast.onfocusout = () => hideLater(onAction ? 4000 : duration);
   toast.classList.add("show");
-  window.clearTimeout(showToast.timeout);
-  showToast.timeout = window.setTimeout(() => toast.classList.remove("show"), 2600);
+  hideLater(duration);
+}
+
+// Deletes apply at once, so each one hands its toast a copy of the records from just before.
+function portfolioUndoPoint() {
+  return JSON.stringify({ holdings, activities, portfolioSnapshots, capitalAnchor: state.capitalAnchor });
+}
+
+function restorePortfolio(undoPoint) {
+  const saved = JSON.parse(undoPoint);
+  holdings.splice(0, holdings.length, ...saved.holdings);
+  activities.splice(0, activities.length, ...saved.activities);
+  portfolioSnapshots.splice(0, portfolioSnapshots.length, ...saved.portfolioSnapshots);
+  state.capitalAnchor = saved.capitalAnchor ?? null;
+}
+
+function showUndoToast(message, undoPoint, restoredMessage) {
+  const afterDelete = JSON.stringify([holdings, activities]);
+  showToast(message, {
+    actionLabel: "Undo",
+    duration: 10000,
+    onAction: () => {
+      if (JSON.stringify([holdings, activities]) !== afterDelete) {
+        showToast("The portfolio changed after that delete, so it can no longer be undone.");
+        return;
+      }
+      restorePortfolio(undoPoint);
+      savePortfolio();
+      renderAll();
+      showToast(restoredMessage);
+    },
+  });
+}
+
+// Form problems are shown inside the dialog: the toast sits under the modal backdrop, and
+// behind the dialog itself on a phone. Without an open dialog the message falls back to a toast.
+function showFormError(message, fieldIds = []) {
+  const dialog = document.querySelector("#actionDialog");
+  const banner = document.querySelector("#dialogError");
+  if (!dialog?.open || !banner) {
+    showToast(message);
+    return;
+  }
+
+  clearFormError();
+  const invalid = fieldIds.map((id) => id && document.querySelector(`#dialogFields #${id}`)).filter(Boolean);
+  if (!invalid.length) {
+    banner.textContent = message;
+    banner.hidden = false;
+    banner.scrollIntoView({ block: "nearest" });
+    return;
+  }
+
+  invalid.forEach((field) => field.setAttribute("aria-invalid", "true"));
+  const note = document.createElement("span");
+  note.className = "field-error";
+  note.textContent = message;
+  invalid[0].closest("label, .field-group")?.append(note);
+  invalid[0].focus();
+}
+
+function clearFormError(field) {
+  const banner = document.querySelector("#dialogError");
+  if (banner) {
+    banner.hidden = true;
+    banner.textContent = "";
+  }
+  const fields = field ? [field] : [...document.querySelectorAll("#dialogFields [aria-invalid]")];
+  fields.forEach((item) => {
+    item.removeAttribute("aria-invalid");
+    item.closest("label, .field-group")?.querySelector(".field-error")?.remove();
+  });
+}
+
+// Open the shared dialog on its form rather than the close button. Touch screens start on
+// the title so the on-screen keyboard stays down until a field is tapped.
+function presentActionDialog(fallbackMessage = "") {
+  const dialog = document.querySelector("#actionDialog");
+  clearFormError();
+  if (!dialog.showModal) {
+    if (fallbackMessage) showToast(fallbackMessage);
+    return;
+  }
+  dialog.showModal();
+  const title = document.querySelector("#dialogTitle");
+  const firstField = dialog.querySelector("#dialogFields input:not([type='file']), #dialogFields select, #dialogFields textarea");
+  (window.matchMedia("(pointer: coarse)").matches ? title : firstField || title).focus();
 }
 
 function fieldMarkup(config) {
@@ -2670,6 +2982,18 @@ function fieldMarkup(config) {
       `;
     }
 
+    if (field.kind === "secret") {
+      return `
+        <div class="field-group">
+          <label for="${field.id}">${field.label}</label>
+          <span class="secret-field">
+            <input id="${field.id}" type="password" value="${htmlAttr(field.value)}" autocomplete="off" autocapitalize="off" spellcheck="false" />
+            <button type="button" class="secret-toggle" data-reveal="${field.id}" aria-label="Show ${htmlAttr(field.label.toLowerCase())}">Show</button>
+          </span>
+        </div>
+      `;
+    }
+
     return `
       <label>
         ${field.label}
@@ -2677,31 +3001,6 @@ function fieldMarkup(config) {
       </label>
     `;
   }).join("");
-}
-
-function refreshPrices() {
-  const btn = document.querySelector("#refreshButton");
-  btn.classList.add("spinning");
-  const heroValues = document.querySelectorAll(".primary-value strong, #pnlAmount, #availableCash, #pnlPercent, #dayChange, #dayChangePct");
-  heroValues.forEach((el) => el.classList.add("skeleton-pulse"));
-
-  window.setTimeout(() => {
-    holdings.forEach((fund) => {
-      if (isCashHolding(fund)) return;
-      const movement = 0.995 + Math.random() * 0.016;
-      const baseNav = Number(fund.baseNav ?? fund.currentNav ?? fund.buyingNav);
-      fund.baseNav = Number((baseNav * movement).toFixed(4));
-    });
-    savePortfolio();
-    const now = new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
-    const fullLabel = `Last updated: ${todayLabel()} ${now}`;
-    btn.title = fullLabel;
-    document.querySelector(".last-updated").textContent = fullLabel;
-    btn.classList.remove("spinning");
-    heroValues.forEach((el) => el.classList.remove("skeleton-pulse"));
-    renderAll();
-    showToast("NAV refreshed. Fund values and charts updated.");
-  }, 700);
 }
 
 function focusAnalytics() {
@@ -2722,13 +3021,13 @@ function importSampleData() {
   try {
     parsed = JSON.parse(input);
   } catch {
-    showToast("Import JSON could not parse that text.");
+    showFormError("Import JSON could not parse that text.", ["jsonImport"]);
     return false;
   }
 
   const restore = document.querySelector("#jsonImportMode")?.value === "Restore full portfolio";
   if (!parsed || typeof parsed !== "object") {
-    showToast("Import JSON must contain a portfolio object or a fund list.");
+    showFormError("Import JSON must contain a portfolio object or a fund list.", ["jsonImport"]);
     return false;
   }
   const importedHoldings = Array.isArray(parsed) ? parsed : parsed.holdings || parsed.funds || [];
@@ -2736,12 +3035,12 @@ function importSampleData() {
   const snapshotInput = parsed.portfolioSnapshots || parsed.snapshots || [];
   if (![importedHoldings, importedActivities, snapshotInput].every((list) =>
     Array.isArray(list) && list.every((item) => item && typeof item === "object" && !Array.isArray(item)))) {
-    showToast("Holdings, activities, and snapshots must be lists of records.");
+    showFormError("Holdings, activities, and snapshots must be lists of records.", ["jsonImport"]);
     return false;
   }
   if (restore && (!Array.isArray(parsed.holdings) || !Array.isArray(parsed.activities)
       || !Array.isArray(parsed.portfolioSnapshots || parsed.snapshots))) {
-    showToast("Restore needs a full backup with holdings, activities, and snapshots. Use Merge for partial files.");
+    showFormError("Restore needs a full backup with holdings, activities, and snapshots. Use Merge for partial files.", ["jsonImport"]);
     return false;
   }
   const importedSnapshots = normalizePortfolioSnapshots(snapshotInput);
@@ -2749,7 +3048,7 @@ function importSampleData() {
     const before = localStorage.getItem(storageKey);
     if (before) localStorage.setItem(`${storageKey}.beforeJsonImport`, before);
   } catch {
-    showToast("Could not save a recovery copy. Import cancelled; export a backup and free browser storage first.");
+    showFormError("Could not save a recovery copy. Import cancelled; export a backup and free browser storage first.");
     return false;
   }
   if (restore) {
@@ -2862,9 +3161,10 @@ function bindJsonFileInput() {
       const text = await file.text();
       document.querySelector("#jsonImport").value = text;
       JSON.parse(text);
-      showToast(`${file.name} loaded. Confirm to import.`);
+      clearFormError(input);
+      input.closest("label").querySelector("span").textContent = `${file.name} loaded. Check the import method, then import.`;
     } catch {
-      showToast(`${file.name} is not valid JSON.`);
+      showFormError(`${file.name} is not valid JSON.`, ["jsonFileInput"]);
     }
   });
 }
@@ -2943,7 +3243,6 @@ function openEditFundDialog(symbol) {
 
   if (isCashHolding(rawFund)) {
     const cash = normalizeCashHolding(rawFund);
-    const dialog = document.querySelector("#actionDialog");
     const fields = document.querySelector("#dialogFields");
     state.action = "Edit Cash";
     state.editingSymbol = rawFund.symbol;
@@ -2955,13 +3254,11 @@ function openEditFundDialog(symbol) {
     fields.className = "dialog-fields two-column";
     fields.innerHTML = cashFieldMarkup(cash);
 
-    if (dialog.showModal) dialog.showModal();
-    else showToast("Editing Cash");
+    presentActionDialog("Editing Cash");
     return;
   }
 
   const fund = deriveFund(rawFund);
-  const dialog = document.querySelector("#actionDialog");
   const fields = document.querySelector("#dialogFields");
   state.action = "Edit Asset";
   state.editingSymbol = symbol;
@@ -2969,23 +3266,20 @@ function openEditFundDialog(symbol) {
   document.querySelector("#dialogTitle").textContent = `Edit ${symbol}`;
   document.querySelector("#dialogCopy").textContent = "Update this fund's details. Units, current value, daily change, and P&L recalculate after saving.";
   document.querySelector("#confirmAction").textContent = "Save Changes";
-  document.querySelector("#deleteFund").hidden = false;
+  const deleteButton = document.querySelector("#deleteFund");
+  deleteButton.hidden = false;
+  deleteButton.textContent = "Delete Fund";
   fields.className = "dialog-fields two-column";
   fields.innerHTML = fundFieldMarkup(fund);
   bindAssetFormHelpers();
 
-  if (dialog.showModal) {
-    dialog.showModal();
-  } else {
-    showToast(`Editing ${symbol}`);
-  }
+  presentActionDialog(`Editing ${symbol}`);
 }
 
 function openEditActivityDialog(id) {
   const activity = activities.find((item) => item.id === id);
   if (!activity) return;
 
-  const dialog = document.querySelector("#actionDialog");
   const fields = document.querySelector("#dialogFields");
   state.action = "Edit Transaction";
   state.editingActivityId = id;
@@ -3033,11 +3327,7 @@ function openEditActivityDialog(id) {
   fields.innerHTML = transactionFieldMarkup(activity.type, editValues);
   bindOrderFormHelpers();
 
-  if (dialog.showModal) {
-    dialog.showModal();
-  } else {
-    showToast(`Editing ${activity.asset} activity.`);
-  }
+  presentActionDialog(`Editing ${activity.asset} activity.`);
 }
 
 function transactionTypeOptions() {
@@ -3061,16 +3351,20 @@ function transactionFieldMarkup(type, values = {}) {
   const typeField = { id: "transactionType", label: "Order type", kind: "select", options: transactionTypeOptions(), value: type };
 
   if (type === "Switch") {
-    const isNewDestination = values.destAsset === NEW_SWITCH_DESTINATION;
-    const fundOptions = transactionFundOptions([values.asset, isNewDestination ? null : values.destAsset], true);
-    const source = holdings.find((item) => item.symbol === (values.asset || fundOptions[0]));
-    const dest = isNewDestination ? draftSwitchFund(values) : holdings.find((item) => item.symbol === (values.destAsset || fundOptions[0]));
+    const fundOptions = transactionFundOptions(
+      [values.asset, values.destAsset === NEW_SWITCH_DESTINATION ? null : values.destAsset], true);
+    const sourceSymbol = values.asset || fundOptions[0];
+    // A fresh switch starts on a destination other than the source, so it is valid as opened.
+    const destSymbol = values.destAsset || fundOptions.find((symbol) => symbol !== sourceSymbol) || NEW_SWITCH_DESTINATION;
+    const isNewDestination = destSymbol === NEW_SWITCH_DESTINATION;
+    const source = holdings.find((item) => item.symbol === sourceSymbol);
+    const dest = isNewDestination ? draftSwitchFund(values) : holdings.find((item) => item.symbol === destSymbol);
     return fieldMarkup([
       dateField,
       typeField,
-      { id: "transactionAsset", label: "Switch from (source)", kind: "select", options: fundOptions, value: values.asset },
+      { id: "transactionAsset", label: "Switch from (source)", kind: "select", options: fundOptions, value: sourceSymbol },
       { id: "transactionDestAsset", label: "Switch to (destination)", kind: "select",
-        options: [...fundOptions, NEW_SWITCH_DESTINATION], value: values.destAsset,
+        options: [...fundOptions, NEW_SWITCH_DESTINATION], value: destSymbol,
         optionLabels: { [NEW_SWITCH_DESTINATION]: "Add a new fund…" } },
       ...(isNewDestination ? [
         { id: "switchFundSymbol", label: "New fund code", value: values.newFundSymbol },
@@ -3080,7 +3374,7 @@ function transactionFieldMarkup(type, values = {}) {
         { id: "switchFundCurrency", label: "NAV currency", kind: "select",
           options: Object.keys(currencyConfig), value: dest.navCurrency },
       ] : []),
-      { id: "transactionAmount", label: "Switch amount (THB)", type: "number", step: "0.01", value: values.amount ?? "1500", min: "0" },
+      { id: "transactionAmount", label: "Switch amount (THB)", type: "number", step: "0.01", value: values.amount ?? "", min: "0" },
       ...nativeTransactionFields(source, "transactionSourceAmount", values.sourceAmount, "Source proceeds"),
       ...nativeTransactionFields(dest, "transactionDestAmount", values.destAmount, "Destination investment"),
       { id: "transactionSwitchOutNav", label: `Switch-out NAV (${fundNavCurrency(source || {})})`, type: "number", step: "0.0001", value: values.switchOutNav ?? "", min: "0" },
@@ -3119,24 +3413,41 @@ function transactionFieldMarkup(type, values = {}) {
     typeField,
     { id: "transactionAsset", label: "Fund", kind: "select", options: fundOptions, value: values.asset },
     { id: "transactionUnits", label: "Units", value: values.units ?? "" },
-    { id: "transactionAmount", label: type === "Sell" ? "Proceeds received (THB)" : type === "Buy" ? "Amount paid (THB)" : "Amount (THB)", type: "number", step: "0.01", value: values.amount ?? "1500", min: "0" },
+    { id: "transactionAmount", label: type === "Sell" ? "Proceeds received (THB)" : type === "Buy" ? "Amount paid (THB)" : "Amount (THB)", type: "number", step: "0.01", value: values.amount ?? "", min: "0" },
     ...((type === "Buy" || type === "Sell") ? nativeTransactionFields(selectedFund, "transactionNativeAmount", values.nativeAmount, type === "Buy" ? "Amount invested" : "Proceeds received") : []),
   ];
 
   if (type === "Buy") {
-    const selectedHolding = holdings.find((item) => item.symbol === values.asset);
-    const selectedCashContext = selectedHolding ? cashIdentity(selectedHolding) : {};
-    const selectedCash = cashBalance(selectedCashContext);
-    const cashLabel = selectedHolding
-      ? `Use ${selectedHolding.bank} ${selectedHolding.port} Cash for this buy (${money(selectedCash)} available)`
-      : `Use Cash balance for this buy (${money(cashBalance())} available)`;
-    fields.push({ id: "transactionUseCash", label: cashLabel, kind: "checkbox", checked: Boolean(values.fromCash) });
+    fields.push({ id: "transactionUseCash", label: useCashLabel(selectedFund), kind: "checkbox", checked: Boolean(values.fromCash) });
+  } else if (type === "Sell") {
+    fields.push({ id: "transactionSellAll", label: "Sell all units in this fund", kind: "checkbox", checked: Boolean(values.sellAll) });
   }
 
-  fields.push({ id: "transactionSellAll", label: "Sell all units in this fund", kind: "checkbox", checked: Boolean(values.sellAll) });
   return fieldMarkup(fields) + ((type === "Buy" || type === "Sell") && selectedFund && fundNavCurrency(selectedFund) !== "THB"
     ? `<div class="order-preview" id="fxPreview" aria-live="polite"></div>` : "");
 }
+
+// A port is often named after its bank ("AIA" / "AIA Unit Linked"); say the bank once.
+function cashPocketName(holding) {
+  const { bank, port } = cashIdentity(holding);
+  return port.toLowerCase().startsWith(bank.toLowerCase()) ? port : `${bank} ${port}`;
+}
+
+function useCashLabel(holding) {
+  return holding
+    ? `Use ${cashPocketName(holding)} cash for this buy (${money(cashBalance(cashIdentity(holding)))} available)`
+    : `Use cash balance for this buy (${money(cashBalance())} available)`;
+}
+
+const orderConfirmLabels = {
+  Buy: "Record Buy",
+  Sell: "Record Sell",
+  Switch: "Record Switch",
+  Dividend: "Record Dividend",
+  Deposit: "Record Deposit",
+  Withdraw: "Record Withdrawal",
+  Transfer: "Record Transfer",
+};
 
 function nativeTransactionFields(holding, id, value, label) {
   if (!holding || fundNavCurrency(holding) === "THB") return [];
@@ -3205,8 +3516,13 @@ function bindOrderFormHelpers() {
   const typeInput = document.querySelector("#transactionType");
   if (!typeInput) return;
 
+  if (state.action === "Add Transaction") {
+    document.querySelector("#confirmAction").textContent = orderConfirmLabels[typeInput.value] || "Record Order";
+  }
+
   typeInput.addEventListener("change", () => {
     renderTransactionFields(typeInput.value, readTransactionFormValues());
+    document.querySelector("#transactionType")?.focus();
   });
 
   if (["Buy", "Sell", "Switch"].includes(typeInput.value)) {
@@ -3317,23 +3633,13 @@ function bindBuySellHelpers() {
   renderFxPreview();
 
   const syncUseCashLabel = () => {
-    if (!useCashInput) return;
-    const holding = holdings.find((item) => item.symbol === assetInput.value);
-    const labelText = useCashInput.closest("label")?.querySelector("span");
-    if (!labelText) return;
-    if (!holding) {
-      labelText.textContent = `Use Cash balance for this buy (${money(cashBalance())} available)`;
-      return;
-    }
-    const available = cashBalance(cashIdentity(holding));
-    labelText.textContent = `Use ${holding.bank} ${holding.port} Cash for this buy (${money(available)} available)`;
+    const labelText = useCashInput?.closest("label")?.querySelector("span");
+    if (labelText) labelText.textContent = useCashLabel(holdings.find((item) => item.symbol === assetInput.value));
   };
 
   const syncSellAll = () => {
     const isSellAll = typeInput.value === "Sell" && Boolean(sellAllInput?.checked);
     const holding = holdings.find((item) => item.symbol === assetInput.value);
-    sellAllInput?.closest("label")?.classList.toggle("is-disabled", typeInput.value !== "Sell");
-    useCashInput?.closest("label")?.classList.toggle("is-disabled", typeInput.value !== "Buy");
     syncUseCashLabel();
     unitsInput.readOnly = isSellAll;
     if (typeInput.value !== "Sell") {
@@ -3433,11 +3739,6 @@ function bindSwitchHelpers() {
 }
 
 function openActionDialog(action) {
-  if (action === "Update Prices") {
-    refreshPrices();
-    return;
-  }
-
   if (action === "View Analytics" || action === "View all activity") {
     focusAnalytics();
     return;
@@ -3448,7 +3749,6 @@ function openActionDialog(action) {
     return;
   }
 
-  const dialog = document.querySelector("#actionDialog");
   const fields = document.querySelector("#dialogFields");
   state.action = action;
   state.editingSymbol = "";
@@ -3503,19 +3803,23 @@ function openActionDialog(action) {
       },
     ]);
     bindJsonFileInput();
+    const modeInput = document.querySelector("#jsonImportMode");
+    const syncImportLabel = () => {
+      document.querySelector("#confirmAction").textContent = modeInput.value === "Restore full portfolio" ? "Restore" : "Import";
+    };
+    modeInput.addEventListener("change", syncImportLabel);
+    syncImportLabel();
   }
 
-  if (dialog.showModal) {
-    dialog.showModal();
-  } else {
-    showToast(action);
-  }
+  presentActionDialog(action);
 }
 
 function handleConfirm(event) {
   event.preventDefault();
+  // Report a problem in the dialog, marking the fields it is about (falsy ids are skipped).
+  const fail = (message, ...fieldIds) => showFormError(message, fieldIds);
   if (cloudState.stale) {
-    showToast("Another tab changed the portfolio. Close and reopen this form before saving.");
+    fail("Another tab changed the portfolio. Close and reopen this form before saving.");
     return;
   }
   const dialog = document.querySelector("#actionDialog");
@@ -3525,7 +3829,7 @@ function handleConfirm(event) {
   if (state.action === "Edit Cash" || (state.action === "Add Asset" && getValue("assetCategory") === CASH_CATEGORY)) {
     const values = readCashFormValues();
     if (values.cashBalance < 0) {
-      showToast("Cash balance cannot be negative.");
+      fail("Cash balance cannot be negative.", "cashBalance");
       return;
     }
 
@@ -3574,17 +3878,20 @@ function handleConfirm(event) {
     const currencyFields = isForeign ? { navCurrency, fxRate: currentFxRate, buyFxRate } : { navCurrency: "THB" };
 
     if (!symbol || !name || investedTHB <= 0 || buyingNav <= 0 || currentNav <= 0) {
-      showToast("Fund needs code, name, invested amount, buying NAV, and current NAV.");
+      fail("Fund needs code, name, invested amount, buying NAV, and current NAV.",
+        !symbol && "assetSymbol", !name && "assetName", investedTHB <= 0 && "assetPurchase",
+        buyingNav <= 0 && "assetBuyingNav", currentNav <= 0 && "assetCurrentNav");
       return;
     }
 
     if (symbol === CASH_SYMBOL) {
-      showToast("CASH is reserved for the cash balance.");
+      fail("CASH is reserved for the cash balance.", "assetSymbol");
       return;
     }
 
     if (isForeign && (buyFxRate <= 0 || currentFxRate <= 0)) {
-      showToast(`${navCurrency} fund needs a buy and current FX rate (THB per ${navCurrency}).`);
+      fail(`${navCurrency} fund needs a buy and current FX rate (THB per ${navCurrency}).`,
+        buyFxRate <= 0 && "assetBuyFxRate", currentFxRate <= 0 && "assetCurrentFxRate");
       return;
     }
 
@@ -3593,12 +3900,12 @@ function handleConfirm(event) {
       const duplicate = holdings.some((item, index) => item.symbol === symbol && index !== existingIndex);
 
       if (existingIndex < 0) {
-        showToast("This fund is no longer in the table.");
+        fail("This fund is no longer in the table.");
         return;
       }
 
       if (duplicate) {
-        showToast(`${symbol} already exists. Use a different fund code.`);
+        fail(`${symbol} already exists. Use a different fund code.`, "assetSymbol");
         return;
       }
 
@@ -3670,14 +3977,14 @@ function handleConfirm(event) {
     let newFx = null;
 
     if (!Number.isFinite(amount) || amount <= 0) {
-      showToast("Enter a positive THB amount.");
+      fail("Enter a positive THB amount.", "transactionAmount");
       return;
     }
 
     if (holding && activityAffectsHolding(type) && fundNavCurrency(holding) !== "THB") {
       const nativeAmount = Number(getValue("transactionNativeAmount"));
       if (!Number.isFinite(nativeAmount) || nativeAmount <= 0) {
-        showToast(`Enter the actual ${fundNavCurrency(holding)} amount from your confirmation.`);
+        fail(`Enter the actual ${fundNavCurrency(holding)} amount from your confirmation.`, "transactionNativeAmount");
         return;
       }
       newFx = { currency: fundNavCurrency(holding), nativeAmount, rate: amount / nativeAmount };
@@ -3695,28 +4002,32 @@ function handleConfirm(event) {
         : holdings.find((item) => item.symbol === toSymbol);
 
       if (!source || !dest || isCashHolding(source) || isCashHolding(dest)) {
-        showToast("Switch needs a source and a destination fund.");
+        fail("Switch needs a source and a destination fund.",
+          (!source || isCashHolding(source)) && "transactionAsset", (!dest || isCashHolding(dest)) && "transactionDestAsset");
         return;
       }
       if (fromSymbol === dest.symbol) {
-        showToast("Pick two different funds to switch between.");
+        fail("Pick two different funds to switch between.", isNewDestination ? "switchFundSymbol" : "transactionDestAsset");
         return;
       }
       if (isNewDestination) {
         const error = newSwitchFundError(dest);
         if (error) {
-          showToast(error);
+          fail(error, "switchFundSymbol");
           return;
         }
       }
       if (![switchOutNav, destBuyingNav].every((value) => Number.isFinite(value) && value > 0)) {
-        showToast("Switch needs an invested amount, switch-out NAV, and destination buying NAV.");
+        fail("Switch needs an invested amount, switch-out NAV, and destination buying NAV.",
+          !(switchOutNav > 0) && "transactionSwitchOutNav", !(destBuyingNav > 0) && "transactionBuyingNav");
         return;
       }
 
       const conversion = switchConversion(source, dest, amount, getValue("transactionSourceAmount"), getValue("transactionDestAmount"));
       if (conversion === false) {
-        showToast("Enter the actual foreign-currency amounts from your switch confirmation.");
+        fail("Enter the actual foreign-currency amounts from your switch confirmation.",
+          !(Number(getValue("transactionSourceAmount")) > 0) && "transactionSourceAmount",
+          !(Number(getValue("transactionDestAmount")) > 0) && "transactionDestAmount");
         return;
       }
       newSwitchData = buildSwitchData(source, dest, amount, switchOutNav, destBuyingNav, conversion);
@@ -3740,28 +4051,29 @@ function handleConfirm(event) {
       asset = fromSymbol;
     } else if (type === "Dividend") {
       if (!asset || !holding || amount <= 0) {
-        showToast("Dividend needs a fund and net cash received.");
+        fail("Dividend needs a fund and net cash received.", "transactionAsset");
         return;
       }
       if (taxAmount < 0 || grossAmount < amount) {
-        showToast("Dividend gross amount should be at least the net cash received.");
+        fail("Dividend gross amount should be at least the net cash received.",
+          taxAmount < 0 ? "transactionTaxAmount" : "transactionGrossAmount");
         return;
       }
     } else if (type === "Deposit" || type === "Withdraw") {
       asset = CASH_SYMBOL;
       holding = cashHolding({ create: type === "Deposit" });
       if (amount <= 0) {
-        showToast(`${type} needs a cash amount.`);
+        fail(`${type} needs a cash amount.`, "transactionAmount");
         return;
       }
       if (type === "Withdraw" && amount > cashBalance() + 0.005) {
-        showToast("Cash balance is not high enough for that withdrawal.");
+        fail("Cash balance is not high enough for that withdrawal.", "transactionAmount");
         return;
       }
       cashBasisAmount = type === "Withdraw" ? cashBasisForWithdrawal(amount) : amount;
     } else {
       if (!asset || !holding || amount <= 0) {
-        showToast("Order needs a fund and amount.");
+        fail("Order needs a fund and amount.", "transactionAsset");
         return;
       }
 
@@ -3770,14 +4082,14 @@ function handleConfirm(event) {
       }
 
       if ((type === "Buy" || type === "Sell") && unitCount <= 0) {
-        showToast(`${type} order needs units so the holding can update.`);
+        fail(`${type} order needs units so the holding can update.`, "transactionUnits");
         return;
       }
 
       if (type === "Buy" && fromCash) {
         const cashContext = cashIdentity(holding);
         if (state.action !== "Edit Transaction" && amount > cashBalance(cashContext) + 0.005) {
-          showToast(`${holding.bank} ${holding.port} cash is not high enough for this buy.`);
+          fail(`${cashPocketName(holding)} cash is not high enough for this buy.`, "transactionAmount");
           return;
         }
         cashBasisAmount = cashBasisForWithdrawal(amount);
@@ -3845,19 +4157,22 @@ function handleConfirm(event) {
     if (state.action === "Edit Transaction") {
       const activity = activities.find((item) => item.id === state.editingActivityId);
       if (!activity) {
-        showToast("This activity is no longer available.");
+        fail("This activity is no longer available.");
         return;
       }
 
+      const beforeEdit = portfolioUndoPoint();
       if (!reverseActivityEffect(activity)) {
-        showToast("Could not reverse the old order from the holding.");
+        fail("Could not undo the old order: the fund or its Cash balance no longer covers it.");
         return;
       }
 
-      if (sellAll) {
+      // Cost of the units sold is read only now, with the old order undone: before that the
+      // holding still lacks the units (and cost) this sale took out.
+      if (type === "Sell") {
         const updatedHolding = holdings.find((item) => item.symbol === asset);
-        unitCount = Number(updatedHolding?.units || 0);
-        if (type === "Sell") cashBasisAmount = sellCostBasis(updatedHolding, unitCount);
+        if (sellAll) unitCount = Number(updatedHolding?.units || 0);
+        if (updatedHolding) cashBasisAmount = sellCostBasis(updatedHolding, unitCount);
       }
 
       const previousSwitch = activity.switch;
@@ -3866,10 +4181,10 @@ function handleConfirm(event) {
       }
       const nextActivity = buildActivity(activity);
       if (!applyActivityEffect(nextActivity, newSwitchDestination)) {
-        applyActivityEffect(activity);
-        showToast(type === "Switch"
+        restorePortfolio(beforeEdit);
+        fail(type === "Switch"
           ? "Source fund no longer has enough units for this switch."
-          : "Could not apply the corrected order to the holding.");
+          : "Could not apply the corrected order to the holding.", type === "Switch" && "transactionAmount");
         return;
       }
 
@@ -3890,11 +4205,12 @@ function handleConfirm(event) {
     } else {
       const newActivity = buildActivity({ id: makeId("activity") });
       if (!applyActivityEffect(newActivity, newSwitchDestination)) {
-        showToast(type === "Switch"
+        fail(type === "Switch"
           ? "Source fund doesn't have enough units to switch that amount."
           : type === "Buy" && fromCash
             ? "Cash balance is not high enough for this buy."
-          : "Order is larger than the current holding.");
+          : "Order is larger than the current holding.",
+          type === "Switch" || (type === "Buy" && fromCash) ? "transactionAmount" : "transactionUnits");
         return;
       }
 
@@ -3951,13 +4267,14 @@ function deleteEditingActivity() {
 
   const existingIndex = activities.findIndex((item) => item.id === state.editingActivityId);
   if (existingIndex < 0) {
-    showToast("This activity is no longer available.");
+    showFormError("This activity is no longer available.");
     return;
   }
 
   const activity = activities[existingIndex];
+  const undoPoint = portfolioUndoPoint();
   if (!reverseActivityEffect(activity)) {
-    showToast("Could not remove this order from the holding.");
+    showFormError("Could not remove this order from the holding.");
     return;
   }
 
@@ -3967,12 +4284,12 @@ function deleteEditingActivity() {
   state.editingActivityId = "";
   savePortfolio();
   renderAll();
-  showToast(`${activity.asset} activity deleted. Holding recalculated.`);
+  showUndoToast(`${activity.asset} activity deleted. Holding recalculated.`, undoPoint, `${activity.asset} activity restored.`);
 }
 
 function handleDeleteDialogAction() {
   if (cloudState.stale) {
-    showToast("Another tab changed the portfolio. Close and reopen this form before deleting.");
+    showFormError("Another tab changed the portfolio. Close and reopen this form before deleting.");
     return;
   }
   if (state.action === "Edit Transaction") {
@@ -3988,21 +4305,25 @@ function deleteEditingFund() {
 
   const existingIndex = holdings.findIndex((item) => item.symbol === state.editingSymbol);
   if (existingIndex < 0) {
-    showToast("This fund is no longer in the table.");
+    showFormError("This fund is no longer in the table.");
     return;
   }
 
+  const undoPoint = portfolioUndoPoint();
+  const activityCount = activities.length;
   const [removed] = holdings.splice(existingIndex, 1);
   for (let index = activities.length - 1; index >= 0; index -= 1) {
     if (activities[index].asset === state.editingSymbol) activities.splice(index, 1);
   }
+  const removedOrders = activityCount - activities.length;
 
   document.querySelector("#actionDialog").close();
   state.editingSymbol = "";
-  document.querySelector("#deleteFund").textContent = "Delete Fund";
   savePortfolio();
   renderAll();
-  showToast(`${removed.symbol} deleted.`);
+  showUndoToast(
+    `${removed.symbol} deleted${removedOrders ? `, with ${removedOrders} order${removedOrders === 1 ? "" : "s"}` : ""}.`,
+    undoPoint, `${removed.symbol} restored.`);
 }
 
 function loadViewPreferences() {
@@ -4103,6 +4424,12 @@ function bindInteractions() {
     saveViewPreferences();
     renderHoldings();
   }));
+  document.querySelector("#pnlToggle").addEventListener("click", () => {
+    state.pnlShowAll = !state.pnlShowAll;
+    renderBreakdown();
+    bindDynamicButtons();
+    document.querySelector(".pnl-columns")?.scrollTo(0, 0);
+  });
   document.querySelector("#latestLogButton").addEventListener("click", () => {
     const dates = portfolioSnapshots.map((snapshot) => snapshot.date).filter((date) => date <= todayKey());
     const latest = dates.sort().at(-1) || previousWeekdayKey(todayKey());
@@ -4146,8 +4473,6 @@ function bindInteractions() {
   document.querySelectorAll(".action-tile[data-action]").forEach((button) => {
     button.addEventListener("click", () => openActionDialog(button.dataset.action));
   });
-
-  document.querySelector("#refreshButton").addEventListener("click", () => openActionDialog("Update Prices"));
 
   document.querySelector("#cloudSyncButton")?.addEventListener("click", openCloudSyncDialog);
 
@@ -4217,6 +4542,28 @@ function bindInteractions() {
   document.querySelector("#dialogClose").addEventListener("click", () => document.querySelector("#actionDialog").close());
   document.querySelector("#dialogCancel").addEventListener("click", () => document.querySelector("#actionDialog").close());
 
+  // A field's error goes away as soon as the user starts correcting it.
+  const dialogFields = document.querySelector("#dialogFields");
+  ["input", "change"].forEach((type) => dialogFields.addEventListener(type, (event) => clearFormError(event.target)));
+  dialogFields.addEventListener("click", (event) => {
+    const toggle = event.target.closest("[data-reveal]");
+    const input = toggle && dialogFields.querySelector(`#${toggle.dataset.reveal}`);
+    if (!input) return;
+    const reveal = input.type === "password";
+    input.type = reveal ? "text" : "password";
+    toggle.textContent = reveal ? "Hide" : "Show";
+    toggle.setAttribute("aria-label", toggle.getAttribute("aria-label").replace(/^(Show|Hide)/, reveal ? "Hide" : "Show"));
+  });
+
+  // Ctrl/Cmd+Z takes the Undo offered by the current toast.
+  document.addEventListener("keydown", (event) => {
+    if (event.key.toLowerCase() !== "z" || !(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey) return;
+    if (!showToast.action || document.querySelector("dialog[open]")) return;
+    if (event.target.closest?.("input, textarea, select, [contenteditable]")) return;
+    event.preventDefault();
+    showToast.action();
+  });
+
   document.querySelectorAll("th[data-col]").forEach((th) => {
     th.tabIndex = 0;
     th.scope = "col";
@@ -4254,11 +4601,6 @@ function bindInteractions() {
   }
 }
 
-function initDates() {
-  document.querySelector("#refreshButton").title = "Update NAV for the selected log date";
-}
-
-initDates();
 loadPortfolio();
 loadViewPreferences();
 document.querySelector("#currencyLabel").textContent = state.currency;
