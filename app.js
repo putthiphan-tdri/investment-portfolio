@@ -1,7 +1,9 @@
+const FIXED_INCOME_CATEGORY = "Fixed Income";
+
 // Categorical palette stays away from green/red so P&L colors keep their meaning.
 const categoryPalette = {
   "Cash": "#d57600",
-  "Government Bonds": "#315dff",
+  [FIXED_INCOME_CATEGORY]: "#315dff",
   "Money Market": "#2fa9bd",
   "Thai Equity": "#ec4899",
   "Asian Equity": "#f59e0b",
@@ -237,6 +239,10 @@ function openCloudSyncDialog() {
   presentActionDialog();
 }
 
+function normalizeFundCategory(category) {
+  return category === "Government Bonds" ? FIXED_INCOME_CATEGORY : category;
+}
+
 function applyStoredPayload(parsed) {
   state.logDate = /^\d{4}-\d{2}-\d{2}$/.test(parsed.logDate || "") ? parsed.logDate : todayKey();
   holdings.splice(0, holdings.length, ...((parsed.holdings || []).map((fund) => ({
@@ -244,6 +250,7 @@ function applyStoredPayload(parsed) {
       ? normalizeCashHolding(fund)
       : {
           ...fund,
+          category: normalizeFundCategory(fund.category),
           navLagDays: Math.max(0, Math.round(Number(fund.navLagDays ?? fund.navLag ?? fund.navDateLag ?? 0))),
           navHistory: normalizeNavHistory(fund),
         }),
@@ -1273,7 +1280,7 @@ function fundFieldMarkup(fund = {}, currencyOverride) {
     { id: "assetName", label: "Fund name", value: fund.name || "" },
     { id: "assetBank", label: "Bank / channel", value: fund.bank || "" },
     { id: "assetPort", label: "Port", value: fund.port || "" },
-    { id: "assetCategory", label: "Category", kind: "select", options: Object.keys(categoryPalette), value: fund.category || "Government Bonds" },
+    { id: "assetCategory", label: "Category", kind: "select", options: Object.keys(categoryPalette), value: fund.category || FIXED_INCOME_CATEGORY },
     { id: "assetNavCurrency", label: "NAV currency", kind: "select", options: Object.keys(currencyConfig), value: navCurrency },
     { id: "assetPurchase", label: isForeign ? "Invested amount (THB)" : "Invested amount", type: "number", step: "0.01", value: fund.purchaseAmount ?? "", min: "0" },
     { id: "assetFeeRate", label: "Front fee (%)", type: "number", step: "0.01", value: fund.frontFeeRate ?? "0", min: "0" },
@@ -3084,7 +3091,7 @@ function importSampleData() {
       name: String(item.name || item.fundName || symbol),
       bank: String(item.bank || "Unassigned Bank"),
       port: String(item.port || "Main Port"),
-      category: String(item.category || "Mixed Allocation"),
+      category: normalizeFundCategory(String(item.category || "Mixed Allocation")),
       navCurrency: currencyConfig[item.navCurrency] ? item.navCurrency : "THB",
       fxRate: Number(item.fxRate || item.currentFxRate || 0) || 1,
       buyFxRate: Number(item.buyFxRate || item.fxRate || item.currentFxRate || 0) || 1,

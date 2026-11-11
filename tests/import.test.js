@@ -33,6 +33,16 @@ test('reimporting native orders normalizes defaults without creating duplicate a
   assert.equal(s.data().holdings[0].units,10);
   assert.deepEqual(s.data().portfolioSnapshots,before.portfolioSnapshots);
 });
+test('legacy Government Bonds holdings load and import as Fixed Income', () => {
+  const saved = portfolio();
+  saved.holdings[0].category = 'Government Bonds';
+  saved.holdings.push({ ...saved.holdings[0], symbol: 'MONEY', category: 'Money Market' });
+  const s = session(saved);
+  assert.equal(s.run('holdings[0].category'), 'Fixed Income');
+  assert.equal(s.storage.get(key), JSON.stringify(saved));
+  assert.equal(s.import(saved, 'Restore full portfolio'), true);
+  assert.deepEqual(s.data().holdings.map(fund => fund.category), ['Fixed Income', 'Money Market']);
+});
 test('same-ID corrections replace the complete transaction including cash and switch fields', () => {
   const s = session(portfolio([order({fromCash:true,cashAmount:100})]));
   s.import(portfolio([order({type:'Switch',amount:150,units:'-15', switch:{fromSymbol:'TEST',toSymbol:'OTHER',sourceCostRemoved:125}})]));
