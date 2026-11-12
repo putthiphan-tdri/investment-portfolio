@@ -243,6 +243,10 @@ function normalizeFundCategory(category) {
   return category === "Government Bonds" ? FIXED_INCOME_CATEGORY : category;
 }
 
+function normalizePortName(port) {
+  return port === "Krignsri Exclusive" ? "Krungsri Exclusive" : port;
+}
+
 function applyStoredPayload(parsed) {
   state.logDate = /^\d{4}-\d{2}-\d{2}$/.test(parsed.logDate || "") ? parsed.logDate : todayKey();
   holdings.splice(0, holdings.length, ...((parsed.holdings || []).map((fund) => ({
@@ -251,6 +255,7 @@ function applyStoredPayload(parsed) {
       : {
           ...fund,
           category: normalizeFundCategory(fund.category),
+          port: normalizePortName(fund.port),
           navLagDays: Math.max(0, Math.round(Number(fund.navLagDays ?? fund.navLag ?? fund.navDateLag ?? 0))),
           navHistory: normalizeNavHistory(fund),
         }),
@@ -474,7 +479,7 @@ function normalizeActivities(items) {
     cashAmount: Number(item.cashAmount ?? 0),
     cashBasisAmount: Number(item.cashBasisAmount ?? item.holdingCostBasisAmount ?? 0),
     cashBank: item.cashBank ? String(item.cashBank) : "",
-    cashPort: item.cashPort ? String(item.cashPort) : "",
+    cashPort: normalizePortName(String(item.cashPort || "")),
     depositedToCash: Boolean(item.depositedToCash || item.toCash),
     fromCash: Boolean(item.fromCash || item.useCash),
     ...(item.fx ? { fx: { ...item.fx } } : {}),
@@ -697,7 +702,7 @@ function isCashHolding(item = {}) {
 function cashIdentity({ bank, port } = {}) {
   return {
     bank: String(bank || "Cash").trim() || "Cash",
-    port: String(port || "Uninvested").trim() || "Uninvested",
+    port: normalizePortName(String(port || "Uninvested").trim() || "Uninvested"),
   };
 }
 
@@ -1153,6 +1158,10 @@ function compareText(left, right) {
   return String(left || "").localeCompare(String(right || ""), undefined, { sensitivity: "base", numeric: true });
 }
 
+const compareFundCodes = new Intl.Collator("en", {
+  sensitivity: "base", numeric: true, ignorePunctuation: false,
+}).compare;
+
 function holdingFundSortLabel(item = {}) {
   return isCashHolding(item) ? CASH_SYMBOL : String(item.symbol || item.name || "");
 }
@@ -1228,10 +1237,10 @@ function getSortedHoldings() {
     if (sortState.col === "bank") {
       cmp = compareText(a.bank, b.bank)
         || compareText(a.port, b.port)
-        || compareText(holdingFundSortLabel(a), holdingFundSortLabel(b))
+        || compareFundCodes(holdingFundSortLabel(a), holdingFundSortLabel(b))
         || compareText(a.name, b.name);
     } else if (sortState.col === "symbol") {
-      cmp = compareText(holdingFundSortLabel(a), holdingFundSortLabel(b))
+      cmp = compareFundCodes(holdingFundSortLabel(a), holdingFundSortLabel(b))
         || compareText(a.name, b.name)
         || compareText(a.bank, b.bank)
         || compareText(a.port, b.port);
@@ -3090,7 +3099,7 @@ function importSampleData() {
       symbol,
       name: String(item.name || item.fundName || symbol),
       bank: String(item.bank || "Unassigned Bank"),
-      port: String(item.port || "Main Port"),
+      port: normalizePortName(String(item.port || "Main Port")),
       category: normalizeFundCategory(String(item.category || "Mixed Allocation")),
       navCurrency: currencyConfig[item.navCurrency] ? item.navCurrency : "THB",
       fxRate: Number(item.fxRate || item.currentFxRate || 0) || 1,
@@ -3348,7 +3357,7 @@ function transactionFundOptions(extra = [], includeArchived = false) {
     ? holdings.filter((item) => !isCashHolding(item)).map((item) => item.symbol)
     : activeFundHoldings().map((item) => item.symbol);
   return [...new Set([...base, ...extra].filter(Boolean))]
-    .sort((a, b) => a.localeCompare(b, "en", { sensitivity: "base", numeric: true }));
+    .sort(compareFundCodes);
 }
 
 // Build the order-dialog fields for a given order type. Switch swaps in its own
@@ -3864,7 +3873,7 @@ function handleConfirm(event) {
     const symbol = getValue("assetSymbol").toUpperCase();
     const name = getValue("assetName");
     const bank = getValue("assetBank") || "Unassigned Bank";
-    const port = getValue("assetPort") || `${bank} Main Port`;
+    const port = normalizePortName(getValue("assetPort") || `${bank} Main Port`);
     const category = getValue("assetCategory") || "Mixed Allocation";
     const navCurrency = getValue("assetNavCurrency") || "THB";
     const isForeign = navCurrency !== "THB";

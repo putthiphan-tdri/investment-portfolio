@@ -43,6 +43,22 @@ test('legacy Government Bonds holdings load and import as Fixed Income', () => {
   assert.equal(s.import(saved, 'Restore full portfolio'), true);
   assert.deepEqual(s.data().holdings.map(fund => fund.category), ['Fixed Income', 'Money Market']);
 });
+test('KF- codes come first after loading or importing the legacy Krungsri port spelling', () => {
+  const saved = portfolio([]);
+  saved.holdings = ['KFJPINDX-A', 'KF-WORLD-INDXRMF', 'KF-AINEXT'].map((symbol) => ({
+    ...saved.holdings[0], symbol, bank: 'Krungsri',
+    port: symbol === 'KFJPINDX-A' ? 'Krignsri Exclusive' : 'Krungsri Exclusive',
+  }));
+  const s = session(saved);
+  const sorted = 'getSortedHoldings().map(fund => fund.symbol).join(",")';
+  const expected = 'KF-AINEXT,KF-WORLD-INDXRMF,KFJPINDX-A';
+  assert.equal(s.run(sorted), expected);
+  assert.equal(s.import(saved, 'Restore full portfolio'), true);
+  assert.equal(s.run(sorted), expected);
+  assert.ok(s.data().holdings.every(fund => fund.port === 'Krungsri Exclusive'));
+  s.run('sortState.col = "symbol";');
+  assert.equal(s.run(sorted), expected);
+});
 test('same-ID corrections replace the complete transaction including cash and switch fields', () => {
   const s = session(portfolio([order({fromCash:true,cashAmount:100})]));
   s.import(portfolio([order({type:'Switch',amount:150,units:'-15', switch:{fromSymbol:'TEST',toSymbol:'OTHER',sourceCostRemoved:125}})]));
