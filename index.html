@@ -14,7 +14,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+Thai:wght@400;500;600&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="./styles.css?v=20261112b" />
+    <link rel="stylesheet" href="./styles.css?v=20261119f" />
   </head>
   <body class="v2">
     <div class="app-shell">
@@ -37,7 +37,7 @@
 
         <div class="top-context">
           <div class="date-control" aria-label="NAV log date">
-            <span class="date-caption">Log date</span>
+            <label class="date-caption" for="logDateInput">Log date</label>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3v4m10-4v4M4 9h16M5 5h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1Z" /></svg>
             <input id="logDateInput" class="log-date-input" type="date" aria-label="Log date" />
           </div>
@@ -60,7 +60,6 @@
               <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.4" /><circle cx="12" cy="12" r="1.4" /><circle cx="19" cy="12" r="1.4" /></svg>
             </summary>
             <div class="data-menu-options">
-              <span class="menu-label">Data &amp; backup</span>
               <button class="action-tile secondary" data-action="Import Data">Import JSON</button>
               <button class="action-tile secondary" data-action="Export JSON">Export JSON</button>
               <button class="action-tile secondary install-app-button" id="installAppButton" type="button" hidden>Install My Funds</button>
@@ -74,7 +73,7 @@
       </header>
 
       <main class="content">
-        <div class="pwa-notice" id="offlineNotice" role="status" hidden>Offline — you can view and edit this app’s saved portfolio. Cloud sync requires a connection.</div>
+        <div class="pwa-notice" id="offlineNotice" role="status" hidden>You can view and edit your saved portfolio offline. Reconnect to sync.</div>
         <div class="pwa-notice" id="updateNotice" role="status" hidden>
           <span>A My Funds update is ready. Finish any open edits before reloading.</span>
           <button class="ghost-button" id="applyUpdateButton" type="button">Reload to update</button>
@@ -128,12 +127,7 @@
               <svg id="performanceChart" viewBox="0 0 1400 500" role="group" aria-label="Portfolio performance chart"></svg>
               <div class="chart-tooltip" id="performanceTooltip" role="status" hidden></div>
             </div>
-            <div class="chart-footnote">
-              <div class="chart-legend">
-                <span><i class="legend-line solid"></i> Portfolio Value</span>
-                <span><i class="legend-area"></i> Capital invested</span>
-              </div>
-            </div>
+            <div class="chart-footnote" hidden><div class="chart-legend"></div></div>
           </article>
 
           <article class="panel allocation-panel reveal">
@@ -175,7 +169,7 @@
             <div class="holding-filter-bar" aria-label="Filter investments and cash">
               <label class="filter-search">
                 <span>Search</span>
-                <input id="holdingSearchInput" type="search" placeholder="Search fund, bank, port, category" autocomplete="off" />
+                <input id="holdingSearchInput" type="search" placeholder="Fund, bank, port, or category" autocomplete="off" />
               </label>
               <label class="filter-select">
                 <span>Bank</span>
@@ -243,18 +237,11 @@
           </article>
 
           <article class="panel summary-panel reveal" id="insights" data-section="insights">
-            <h2>Value Calendar</h2>
+            <h2>P&amp;L calendar</h2>
           </article>
 
           <article class="panel events-panel reveal">
-            <h2>Port Details</h2>
-            <div class="empty-state">
-              <span class="empty-icon">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h18v13H3z" /><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /><path d="M3 12h18" /></svg>
-              </span>
-              <strong>No port details yet</strong>
-              <span>Active bank and port exposure will appear after you add funds.</span>
-            </div>
+            <h2>P&amp;L by bank</h2>
           </article>
         </section>
       </main>
@@ -314,7 +301,7 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
         </button>
         <h2 id="dialogTitle" tabindex="-1">Action</h2>
-        <p id="dialogCopy">This workflow is ready.</p>
+        <p id="dialogCopy"></p>
         <div class="dialog-fields" id="dialogFields"></div>
         <p id="dialogError" class="dialog-error" role="alert" hidden></p>
         <menu>
@@ -327,8 +314,8 @@
     </dialog>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="./app.js?v=20261112b"></script>
-    <script src="./pwa.js?v=20261112b" defer></script>
+    <script src="./app.js?v=20261119f"></script>
+    <script src="./pwa.js?v=20261119f" defer></script>
     <script>
       // Section nav: highlight the section currently in view (top + bottom navs).
       (() => {

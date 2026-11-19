@@ -1710,34 +1710,78 @@ function renderActivities() {
   if (visibleActivities.length === 0) {
     list.innerHTML = `
       <div class="empty-panel-state">
-        <strong>No fund activity yet</strong>
-        <span>Your buys, sells, dividends, cash movements, and imports will appear here.</span>
+        <strong>No activity yet</strong>
       </div>
     `;
     return;
   }
 
-  list.innerHTML = visibleActivities.map((item) => `
-    <div class="activity-row" data-edit-activity="${item.id}">
-      <span class="activity-date">${item.date}</span>
-      <span class="badge ${{ Buy: "", Sell: "sell", Switch: "switch-type", Dividend: "dividend", Transfer: "transfer", Import: "import-type", Deposit: "deposit", Withdraw: "withdraw" }[item.type] ?? "import-type"}">${item.type}</span>
-      <strong>${item.type === "Switch" && item.switch ? `${item.switch.fromSymbol} → ${item.switch.toSymbol}` : item.asset}</strong>
-      <span class="activity-transaction">
-        <b class="private-value">${activityAmountLabel(item)}</b>
-        <small class="private-value">${activityDetailLabel(item)}</small>
-      </span>
-      <span class="row-chevron" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="m7 4 6 6-6 6" /></svg></span>
-    </div>
+  const groups = [];
+  visibleActivities.forEach((item) => {
+    const last = groups.at(-1);
+    if (last && last.date === item.date) last.items.push(item);
+    else groups.push({ date: item.date, items: [item] });
+  });
+
+  list.innerHTML = groups.map((group) => `
+    <section class="activity-group">
+      <h3 class="activity-group-date">${htmlAttr(group.date)}</h3>
+      ${group.items.map(activityRowMarkup).join("")}
+    </section>
   `).join("");
 
   list.querySelectorAll("[data-edit-activity]").forEach((row) => {
-    row.addEventListener("click", () => openEditActivityDialog(row.dataset.editActivity));
+    const open = () => openEditActivityDialog(row.dataset.editActivity);
+    row.addEventListener("click", open);
+    row.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      open();
+    });
   });
 }
 
-function formatActivityUnits(value) {
-  const cleaned = String(value || "").replace(/^\+/, "").trim();
-  return cleaned ? `${cleaned} units` : "";
+const activityTypeIcons = {
+  Buy: '<path d="M12 5v14M5 12h14" />',
+  Sell: '<path d="M5 12h14" />',
+  Switch: '<path d="M7 7h11l-3-3M17 17H6l3 3" />',
+  Dividend: '<circle cx="12" cy="12" r="7" /><path d="M14.5 9.5c-.5-.7-1.4-1-2.5-1-1.4 0-2.5.7-2.5 1.8 0 2.5 5 1.4 5 3.9 0 1.1-1.1 1.8-2.5 1.8-1.1 0-2-.4-2.5-1.1M12 7v1.5M12 15.5V17" />',
+  Deposit: '<path d="M12 4v11m-4-4 4 4 4-4M5 20h14" />',
+  Withdraw: '<path d="M12 15V4m-4 4 4-4 4 4M5 20h14" />',
+  Transfer: '<path d="M5 12h14m-4-4 4 4-4 4" />',
+  Import: '<path d="M7 3h7l4 4v14H7zM14 3v4h4" />',
+};
+
+function activityRowMarkup(item) {
+  const type = activityTypeIcons[item.type] ? item.type : "Import";
+  const asset = item.type === "Switch" && item.switch
+    ? `${item.switch.fromSymbol} → ${item.switch.toSymbol}`
+    : item.asset || "Cash";
+  const { note, quantity } = activityMeta(item);
+  const label = [item.type, asset, activityAmountLabel(item)].join(", ");
+  return `
+    <div class="activity-row" data-type="${type.toLowerCase()}" data-edit-activity="${htmlAttr(item.id)}" role="button" tabindex="0" aria-label="Edit ${htmlAttr(label)}">
+      <span class="activity-icon" aria-hidden="true"><svg viewBox="0 0 24 24">${activityTypeIcons[type]}</svg></span>
+      <span class="activity-main">
+        <strong title="${htmlAttr(asset)}">${htmlAttr(asset)}</strong>
+        <small><span class="activity-type">${htmlAttr(item.type)}</span>${note ? ` · <span class="private-value">${htmlAttr(note)}</span>` : ""}</small>
+      </span>
+      <span class="activity-transaction">
+        <b class="private-value">${activityAmountLabel(item)}</b>
+        ${quantity ? `<small class="private-value">${htmlAttr(quantity)}</small>` : ""}
+      </span>
+    </div>
+  `;
+}
+
+function formatActivityUnits(value, isSwitch = false) {
+  const text = String(value ?? "").trim().replace(/^\+/, "");
+  const number = /^(-?)(\d+)(\.\d+)?$/.exec(text.replaceAll(",", ""));
+  if (!number) return text;
+  const [, sign, integer, fraction = ""] = number;
+  const grouped = integer.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  if (isSwitch) return `${grouped}${fraction} units out`;
+  return `${sign}${grouped}${fraction} units`;
 }
 
 function activityAmountLabel(activity) {
@@ -1746,23 +1790,26 @@ function activityAmountLabel(activity) {
   return money(activity.amount);
 }
 
-function activityDetailLabel(activity) {
+// note: how the money moved (left column); quantity: units or tax (under the amount)
+function activityMeta(activity) {
+  const cashRoute = activity.fromCash ? "From cash" : activity.depositedToCash ? "To cash" : "";
+  if (activity.type === "Deposit" || activity.type === "Withdraw") return { note: "", quantity: "" };
+  if (activity.type === "Dividend") {
+    const tax = dividendTaxAmount(activity);
+    return { note: cashRoute, quantity: tax > 0 ? `Tax ${money(tax)}` : "" };
+  }
+  const quantity = formatActivityUnits(activity.units, activity.type === "Switch");
   if (activity.fx) {
-    const prefix = activity.fromCash ? "Paid from Cash · " : activity.depositedToCash ? "Deposited to Cash · " : "";
-    return `${prefix}${formatActivityUnits(activity.units)} · ${Number(activity.fx.nativeAmount).toFixed(2)} ${activity.fx.currency} · ${nav(activity.fx.rate)} THB/${activity.fx.currency}`;
+    const { nativeAmount, currency, rate } = activity.fx;
+    const native = Number(nativeAmount).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const fx = `${native} ${currency} at ${nav(rate)}`;
+    return { note: [cashRoute, fx].filter(Boolean).join(" · "), quantity };
   }
   if (activity.switch?.sourceCurrency) {
     const data = activity.switch;
-    return `${Number(data.sourceAmount).toFixed(2)} ${data.sourceCurrency} → ${Number(data.destAmount).toFixed(2)} ${data.destCurrency}`;
+    return { note: `${Number(data.sourceAmount).toFixed(2)} ${data.sourceCurrency} → ${Number(data.destAmount).toFixed(2)} ${data.destCurrency}`, quantity };
   }
-  if (activity.type === "Sell" && activity.depositedToCash) return "Deposited to Cash";
-  if (activity.type === "Buy" && activity.fromCash) return `Paid from Cash${activity.units ? ` · ${formatActivityUnits(activity.units)}` : ""}`;
-  if (activity.type === "Deposit") return "Added to Cash";
-  if (activity.type === "Withdraw") return "Removed from Cash";
-  if (activity.type !== "Dividend") return formatActivityUnits(activity.units);
-  const tax = dividendTaxAmount(activity);
-  const prefix = activity.depositedToCash ? "Deposited to Cash" : "Dividend received";
-  return tax > 0 ? `${prefix} · Tax ${money(tax)}` : prefix;
+  return { note: cashRoute, quantity };
 }
 
 function parseUnits(value) {
@@ -2457,15 +2504,17 @@ function renderChart(range = "1W") {
   const observations = performanceObservations(carryForwardSnapshotsForRange(sourceSnapshots, startKey, endKey), mode);
   const available = observations.filter((item) => item.chartValue !== null && Number.isFinite(item.chartValue));
   const last = available.at(-1);
+  document.querySelector(".chart-footnote").hidden = !last;
   const privateMoney = (value) => `<span class="private-value">${mode === "value" ? money(value, 0) : signedMoney(value, 0)}</span>`;
   const tone = (value) => mode === "value" ? "" : value > 0 ? "green" : value < 0 ? "red" : "neutral";
   const high = available.length ? Math.max(...available.map((p) => p.chartValue)) : 0;
   const low = available.length ? Math.min(...available.map((p) => p.chartValue)) : 0;
+  const rangeStat = (label, value) =>
+    `<div class="chart-insight"><span>${label}</span><strong class="${tone(value)}">${privateMoney(value)}</strong></div>`;
   insights.innerHTML = last ? `
     <div class="chart-insight chart-insight-main"><span>${name} <span class="info-dot" tabindex="0" role="button" aria-label="What does ${htmlAttr(name)} show?" aria-describedby="chartInfoTooltip">i<span class="info-tooltip" id="chartInfoTooltip">${htmlAttr(description)}</span></span></span><strong class="${tone(last.chartValue)}">${privateMoney(last.chartValue)}</strong><small>${readableDate(last.date)}${last.carriedForward ? " · carried forward" : ""}</small></div>
-    <div class="chart-insight"><span>High</span><strong class="${tone(high)}">${privateMoney(high)}</strong></div>
-    <div class="chart-insight"><span>Low</span><strong class="${tone(low)}">${privateMoney(low)}</strong></div>`
-    : `<div class="chart-insight chart-insight-main"><span>${name}</span><strong class="neutral">No recorded data</strong><small>${readableDate(startKey)} – ${readableDate(endKey)}</small></div>`;
+    ${rangeStat("High", high)}${rangeStat("Low", low)}`
+    : `<div class="chart-insight chart-insight-main"><span>${name}</span><small>${startKey === endKey ? readableDate(endKey) : `${readableDate(startKey)} – ${readableDate(endKey)}`}</small></div>`;
   const rect = svg.closest(".line-chart").getBoundingClientRect();
   const chartWidth = Math.round(Math.max(rect.width, 240));
   const chartHeight = Math.round(Math.max(rect.height, 220));
@@ -2664,7 +2713,7 @@ function renderValueCalendar() {
 
   panel.innerHTML = `
     <div class="calendar-heading">
-      <h2>P&L Calendar</h2>
+      <h2>P&L calendar</h2>
       <div class="calendar-controls" aria-label="Change calendar month">
         <button class="calendar-nav" type="button" data-calendar-shift="-1" aria-label="Previous month">
           <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m12 5-5 5 5 5" /></svg>
@@ -2724,7 +2773,6 @@ function renderBreakdown() {
     document.querySelector(".pnl-list").innerHTML = `
       <div class="empty-panel-state">
         <strong>No P&L contribution yet</strong>
-        <span>Each fund's contribution will appear once holdings are added.</span>
       </div>
     `;
     return;
@@ -2786,7 +2834,6 @@ function renderChannelExposure() {
       <h2>P&L by bank</h2>
       <div class="empty-panel-state">
         <strong>No bank summary yet</strong>
-        <span>Bank-level value, cash, and P&L will appear after you add funds.</span>
       </div>
     `;
     return;
@@ -3779,9 +3826,9 @@ function openActionDialog(action) {
   }[action] || action;
   document.querySelector("#dialogCopy").textContent = {
     "Add Asset": "Add a mutual fund, or choose Cash as the category to record available cash without fund-only fields.",
-    "Add Transaction": "Record a buy, sell, switch, dividend, deposit, withdrawal, or transfer. New dividends and sell proceeds move into Cash.",
-    "Import Data": "Merge adds or updates records. Restore replaces all holdings, activity, and snapshots with a full backup—use it for a corrected portfolio. A recovery copy is saved before importing.",
-  }[action] || "This workflow is ready.";
+    "Add Transaction": "Dividends and sale proceeds go into Cash.",
+    "Import Data": "Merge adds or updates records. Restore replaces all holdings, activity, and snapshots. My Funds saves a recovery copy before importing.",
+  }[action] || "";
   fields.className = "dialog-fields";
 
   if (action === "Add Asset") {
@@ -4388,8 +4435,7 @@ function openCalendarInsight(date) {
     const parsed = new Date(item.date);
     return !Number.isNaN(parsed.getTime()) && dateKeyFromDate(parsed) === date;
   });
-  showInsight(readableDate(date), `<p class="insight-description">Recorded portfolio snapshot and transactions for this date.</p>
-    <dl class="insight-metrics"><div><dt>Portfolio value</dt><dd class="private-value">${money(snapshot.totalFundValue)}</dd></div><div><dt>${chartLabels().pnl}</dt><dd class="private-value">${signedMoney(snapshot.pnl)}</dd></div><div><dt>Recorded daily P&L</dt><dd class="${daily === null ? "" : "private-value"}">${daily === null ? "Not recorded" : signedMoney(daily)}</dd></div><div><dt>${chartLabels().cost}</dt><dd class="private-value">${money(snapshot.totalPaid)}</dd></div></dl>
+  showInsight(readableDate(date), `<dl class="insight-metrics"><div><dt>Portfolio value</dt><dd class="private-value">${money(snapshot.totalFundValue)}</dd></div><div><dt>${chartLabels().pnl}</dt><dd class="private-value">${signedMoney(snapshot.pnl)}</dd></div><div><dt>Recorded daily P&L</dt><dd class="${daily === null ? "" : "private-value"}">${daily === null ? "Not recorded" : signedMoney(daily)}</dd></div><div><dt>${chartLabels().cost}</dt><dd class="private-value">${money(snapshot.totalPaid)}</dd></div></dl>
     <h3>Transactions on this date</h3>${insightActivityMarkup(transactions)}
     <p class="insight-description">Historical fund-level P&L contributions are not stored in this portfolio snapshot.</p>`);
 }
