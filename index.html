@@ -14,7 +14,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+Thai:wght@400;500;600&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="./styles.css?v=20261119f" />
+    <link rel="stylesheet" href="./styles.css?v=20261121e" />
   </head>
   <body class="v2">
     <div class="app-shell">
@@ -110,6 +110,7 @@
               <div class="view-switch" aria-label="Performance view">
                 <button type="button" data-chart-mode="value" aria-pressed="false">Value</button>
                 <button type="button" data-chart-mode="pnl" aria-pressed="true">P&amp;L</button>
+                <button type="button" data-chart-mode="return" aria-pressed="false">Return %</button>
                 <button type="button" data-chart-mode="daily" aria-pressed="false">Daily P&amp;L</button>
               </div>
               <div class="range-tabs" aria-label="Chart range">
@@ -140,8 +141,13 @@
                 </select>
               </label>
             </div>
+            <div class="view-switch allocation-mode-switch" aria-label="Allocation breakdown">
+              <button type="button" data-allocation-mode="category" aria-pressed="true">Category</button>
+              <button type="button" data-allocation-mode="tier" aria-pressed="false">Core / Risk</button>
+            </div>
             <div class="allocation-layout">
               <div class="donut" aria-label="Asset allocation chart">
+                <svg class="donut-svg" id="allocationDonutSvg" viewBox="0 0 220 220" role="group" aria-label="Asset allocation breakdown"></svg>
                 <div class="donut-center">
                   <strong>฿0.00</strong>
                   <span>Total Value</span>
@@ -156,11 +162,19 @@
           <article class="panel holdings-panel reveal holdings-overview" id="holdings" data-section="holdings">
             <div class="panel-heading table-head">
               <h2>Investments &amp; Cash</h2>
+              <div class="view-switch holdings-scope" aria-label="Holdings status">
+                <button type="button" data-holdings-scope="active" aria-pressed="true">Active <span id="activeHoldingsCount">0</span></button>
+                <button type="button" data-holdings-scope="closed" aria-pressed="false">Closed <span id="closedHoldingsCount">0</span></button>
+              </div>
               <span class="holding-filter-count" id="holdingFilterCount">0 assets</span>
               <div class="view-switch holdings-view" aria-label="Holdings view">
                 <button type="button" data-holdings-view="overview" aria-pressed="true">Overview</button>
                 <button type="button" data-holdings-view="detailed" aria-pressed="false">Detailed</button>
               </div>
+              <button class="action-tile secondary update-navs-button" id="updateNavsButton" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 0 1 13.7-5.6L20 8.5M20 4v4.5h-4.5M20 12a8 8 0 0 1-13.7 5.6L4 15.5M4 20v-4.5h4.5" /></svg>
+                Update NAVs
+              </button>
               <button class="action-tile add-fund-button" data-action="Add Asset">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
                 Add fund
@@ -185,6 +199,7 @@
               </label>
               <button class="filter-reset" id="holdingFilterReset" type="button">Reset</button>
             </div>
+            <div class="active-filter-pills" id="holdingActivePills" hidden></div>
             <label class="holding-mobile-sort">
               <span>Sort by</span>
               <select id="holdingSort">
@@ -198,7 +213,7 @@
                 <option value="pnlPct:asc">Return % · Low to high</option>
               </select>
             </label>
-            <div class="table-wrap">
+            <div class="table-wrap" id="activeHoldingsWrap">
               <table>
                 <thead>
                   <tr>
@@ -219,11 +234,26 @@
                 <tbody id="holdingsBody"></tbody>
               </table>
             </div>
+            <div class="closed-holdings-wrap" id="closedHoldingsWrap" hidden></div>
           </article>
 
           <article class="panel activity-panel reveal" id="activity" data-section="activity">
             <div class="panel-heading">
               <h2>Recent activity</h2>
+              <span class="holding-filter-count" id="activityCount">0</span>
+            </div>
+            <div class="activity-toolbar" aria-label="Filter recent activity">
+              <label class="filter-search activity-search">
+                <span>Search activity</span>
+                <input id="activitySearchInput" type="search" placeholder="Search fund, bank, or date" autocomplete="off" />
+              </label>
+              <div class="activity-type-chips" role="group" aria-label="Filter by activity type">
+                <button type="button" data-activity-type="" aria-pressed="true">All</button>
+                <button type="button" data-activity-type="Switch" aria-pressed="false">Switch</button>
+                <button type="button" data-activity-type="Buy" aria-pressed="false">Buy</button>
+                <button type="button" data-activity-type="Sell" aria-pressed="false">Sell</button>
+                <button type="button" data-activity-type="Dividend" aria-pressed="false">Dividend</button>
+              </div>
             </div>
             <div class="activity-list" id="activityList"></div>
           </article>
@@ -313,9 +343,30 @@
       </form>
     </dialog>
 
+    <dialog id="navUpdaterDialog" class="action-dialog nav-updater-dialog" aria-labelledby="navUpdaterTitle">
+      <form method="dialog" id="navUpdaterForm">
+        <button class="dialog-close" id="navUpdaterClose" type="button" aria-label="Close NAV updater">×</button>
+        <div class="nav-updater-head">
+          <div>
+            <h2 id="navUpdaterTitle">Update daily NAVs</h2>
+            <p id="navUpdaterSubtitle" class="insight-description"></p>
+          </div>
+          <div class="nav-updater-progress" id="navUpdaterProgress"></div>
+        </div>
+        <div class="nav-updater-controls" id="navUpdaterControls"></div>
+        <div class="nav-updater-list" id="navUpdaterList"></div>
+        <menu class="nav-updater-menu">
+          <span class="nav-updater-dirty" id="navUpdaterDirty">No unsaved changes</span>
+          <span class="dialog-spacer"></span>
+          <button id="navUpdaterCancel" type="button" class="ghost-button">Cancel</button>
+          <button id="navUpdaterSave" type="button" class="primary-button" disabled>Save updates</button>
+        </menu>
+      </form>
+    </dialog>
+
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="./app.js?v=20261119f"></script>
-    <script src="./pwa.js?v=20261119f" defer></script>
+    <script src="./app.js?v=20261121e"></script>
+    <script src="./pwa.js?v=20261121e" defer></script>
     <script>
       // Section nav: highlight the section currently in view (top + bottom navs).
       (() => {

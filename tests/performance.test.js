@@ -202,7 +202,7 @@ test('return and risk strip renders figures, an empty state and hides money in p
   assert.match(markup, /title="[^"<>]*deposits, withdrawals and sales do not count[^"<>]*"><span>Gain \/ loss</);
   assert.match(markup, /Biggest dip<\/span><strong class="red"><span class="private-value">−฿20<\/span><\/strong><small><span class="return-risk-span">Sep 1 – Sep 2<\/span> · −2\.00%<\/small>/);
   assert.match(markup, /Up days<\/span><strong class="neutral">1 of 2<\/strong><small>1 down<\/small>/);
-  assert.match(markup, /Profit from sales<\/span><strong class="green"><span class="private-value">\+฿100<\/span><\/strong><small>1 of 2 sales costed<\/small>/);
+  assert.match(markup, /Profit from sales<\/span><strong class="green"><span class="private-value">\+฿100<\/span><\/strong><small>1 of 2 sales costed · this range<\/small>/);
   assert.equal((markup.match(/class="return-risk-item"/g)||[]).length, 6);
   assert.doesNotMatch(markup, /return-risk-note|Market P&amp;L|Max drawdown|Time-weighted|Realized|title="undefined"/);
   assert.doesNotMatch(markup, /NaN|Infinity|undefined|฿500/);
@@ -224,4 +224,138 @@ test('return and risk strip renders figures, an empty state and hides money in p
   assert.match(rising, /Biggest dip<\/span><strong class="neutral">None<\/strong><small>No fall from a high<\/small>/);
   assert.match(rising, /Up days<\/span><strong class="neutral">1 of 1<\/strong><small>0 down<\/small>/);
   assert.match(salesOnly, /1 of 2 sales costed/);
+});
+
+test('money places the minus sign before the currency symbol and avoids negative zero', () => {
+  assert.equal(run(`money(-21985.07)`), '−฿21,985.07');
+  assert.equal(run(`money(-0.001)`), '฿0.00');
+  assert.equal(run(`money(1234.5)`), '฿1,234.50');
+  assert.equal(run(`signedMoney(-21985.07)`), '−฿21,985.07');
+  assert.equal(run(`signedMoney(21985.07)`), '+฿21,985.07');
+});
+
+test('return chart mode chains daily moves into cumulative TWR % and renders without NaN', () => {
+  const obs = run(`performanceObservations([
+    {date:'2026-09-01',totalFundValue:1000,totalPaid:1000,pnl:0},
+    {date:'2026-09-02',totalFundValue:1100,totalPaid:1000,pnl:100,dayPnlDelta:100,dayPnlDeltaPct:10},
+    {date:'2026-09-03',totalFundValue:1100,totalPaid:1000,pnl:100,carriedForward:true,sourceDate:'2026-09-02'},
+    {date:'2026-09-04',totalFundValue:1078,totalPaid:1000,pnl:78,dayPnlDelta:-22,dayPnlDeltaPct:-2}
+  ], 'return')`);
+  assert.equal(obs[0].chartValue, null);
+  assert.ok(Math.abs(obs[1].chartValue - 10) < 1e-9);
+  assert.ok(Math.abs(obs[2].chartValue - 10) < 1e-9);
+  assert.ok(Math.abs(obs[3].chartValue - ((1.1 * 0.98 - 1) * 100)) < 1e-9);
+
+  const nodes = new Map();
+  const makeNode = () => ({innerHTML:'',textContent:'',hidden:false,attrs:{},setAttribute(k,v){this.attrs[k]=v;},querySelectorAll(){return [];},closest(){return {getBoundingClientRect(){return {width:600,height:260};}};}});
+  const document = {querySelector(selector){if(!nodes.has(selector)) nodes.set(selector,makeNode()); return nodes.get(selector);},querySelectorAll(){return [];}};
+  const chartContext = vm.createContext({console,document});
+  vm.runInContext(source,chartContext);
+  vm.runInContext(`
+    totals = () => ({list:[]});
+    state.chartMode = 'return';
+    snapshotsForRange = () => ({
+      sourceSnapshots: [
+        {date:'2026-09-02',totalFundValue:1100,totalPaid:1000,pnl:100,pnlPct:10,dayPnlDelta:100,dayPnlDeltaPct:10},
+        {date:'2026-09-04',totalFundValue:1078,totalPaid:1000,pnl:78,pnlPct:7.8,dayPnlDelta:-22,dayPnlDeltaPct:-2}
+      ],
+      startKey:'2026-09-01',
+      endKey:'2026-09-04'
+    });
+    renderChart('1W');
+  `, chartContext);
+  const svgMarkup = nodes.get('#performanceChart').innerHTML;
+  assert.doesNotMatch(svgMarkup, /NaN|Infinity/);
+  assert.match(svgMarkup, /chart-zero/);
+  assert.match(svgMarkup, /chart-peak-line/);
+  assert.match(nodes.get('#chartInsights').innerHTML, /\+7\.80%/);
+});
+
+test('fundMovesOnDate, sparklines, and fund insight charts build valid output from navHistory', () => {
+  const ctx = vm.createContext({ console });
+  vm.runInContext(source, ctx);
+  vm.runInContext(`
+    state.logDate = '2026-11-18';
+    holdings.push(
+      {symbol:'ALPHA',name:'Alpha Fund',category:'Global Equity',units:100,buyingNav:10,currentNav:12,navHistory:[{date:'2026-11-17',pct:1.5,nav:11.5},{date:'2026-11-18',pct:4.35,nav:12}]},
+      {symbol:'BETA',name:'Beta Fund',category:'Asian Equity',units:100,buyingNav:20,currentNav:18,navHistory:[{date:'2026-11-17',pct:-2,nav:19.5},{date:'2026-11-18',pct:-7.69,nav:18}]},
+      {symbol:'FLAT',name:'Flat Fund',category:'Fixed Income',units:100,buyingNav:10,currentNav:10,navHistory:[{date:'2026-11-18',pct:0,nav:10}]}
+    );
+  `, ctx);
+  const moves = JSON.parse(vm.runInContext(`JSON.stringify(fundMovesOnDate('2026-11-18'))`, ctx));
+  assert.equal(moves.map((m) => m.symbol).join(), 'BETA,ALPHA');
+
+  const spark = vm.runInContext(`fundSparklineMarkup('ALPHA')`, ctx);
+  assert.match(spark, /holding-sparkline up/);
+  assert.doesNotMatch(spark, /NaN|Infinity/);
+
+  const chart = vm.runInContext(`fundInsightChartMarkup(
+    {symbol:'BETA',buyingNav:20,navCurrency:'THB'},
+    [{date:'2026-11-17',pct:-2,nav:19.5},{date:'2026-11-18',pct:-7.69,nav:18}],
+    [{type:'Buy',asset:'BETA',date:'Nov 17, 2026',amount:100000}]
+  )`, ctx);
+  assert.match(chart, /fund-buy-line/);
+  assert.match(chart, /fund-tx-marker buy/);
+  assert.doesNotMatch(chart, /NaN|Infinity/);
+});
+
+test('allocation groups aggregate by category and Core/Risk tier with P&L %', () => {
+  const ctx = vm.createContext({ console });
+  vm.runInContext(source, ctx);
+  const items = [
+    { symbol: 'FI1', bank: 'SCB', category: 'Fixed Income', updatedAmount: 600, purchaseAmount: 580, pnlBaht: 20 },
+    { symbol: 'EQ1', bank: 'SCB', category: 'Global Equity', updatedAmount: 300, purchaseAmount: 320, pnlBaht: -20 },
+    { symbol: 'GLD', bank: 'Krungsri', category: 'Gold', updatedAmount: 100, purchaseAmount: 80, pnlBaht: 20 },
+  ];
+  const byCategory = JSON.parse(vm.runInContext(`JSON.stringify(buildAllocationGroups(${JSON.stringify(items)}, 'category', 1000))`, ctx));
+  assert.equal(byCategory.map((g) => g.key).join(), 'Fixed Income,Global Equity,Gold');
+  assert.ok(Math.abs(byCategory[0].pct - 60) < 1e-6);
+  assert.ok(Math.abs(byCategory[2].pnlPct - 25) < 1e-6);
+
+  const byTier = JSON.parse(vm.runInContext(`JSON.stringify(buildAllocationGroups(${JSON.stringify(items)}, 'tier', 1000))`, ctx));
+  assert.equal(byTier.map((g) => g.key).join(), 'Core,Risk');
+  assert.ok(Math.abs(byTier[0].pct - 60) < 1e-6);
+  assert.ok(Math.abs(byTier[1].pct - 40) < 1e-6);
+});
+
+test('activityRealizedPnl, activity filtering, closed holdings, and NAV updater items', () => {
+  const ctx = vm.createContext({ console });
+  vm.runInContext(source, ctx);
+  vm.runInContext(`
+    state.logDate = '2026-11-18';
+    holdings.push(
+      { symbol: 'HELD1', name: 'Held One', bank: 'SCB', port: 'P1', category: 'Fixed Income', units: 100, buyingNav: 10, currentNav: 10.5, purchaseAmount: 1000, navHistory: [{ date: '2026-11-17', pct: 0.1, nav: 10.4 }, { date: '2026-11-18', pct: 0.96, nav: 10.5 }] },
+      { symbol: 'HELD2', name: 'Held Two', bank: 'Krungsri', port: 'P2', category: 'Gold', units: 50, buyingNav: 20, currentNav: 21, purchaseAmount: 1000, navHistory: [{ date: '2026-11-17', pct: 0.5, nav: 21 }] },
+      { symbol: 'ZERO1', name: 'Zero Units', bank: 'SCB', port: 'P1', category: 'Fixed Income', units: 0, buyingNav: 10, currentNav: 10 },
+      { symbol: 'CLOSED_OK', name: 'Closed Costed', bank: 'SCB', port: 'P1', category: 'Global Equity', archived: true, archivedDate: '2026-10-01', archivedUnits: 10, archivedSaleAmount: 1200, archivedPnl: 200 },
+      { symbol: 'CLOSED_UNCOSTED', name: 'Closed Uncosted', bank: 'SCB', port: 'P1', category: 'Commodities', archived: true, archivedDate: '2026-09-01', archivedUnits: 10, archivedSaleAmount: 500, archivedPnl: 500 }
+    );
+    activities.push(
+      { id: 'a1', type: 'Switch', date: 'Nov 18, 2026', amount: 1100, switch: { fromSymbol: 'HELD1', toSymbol: 'HELD2', amount: 1100, sourceCostRemovedTHB: 1000 } },
+      { id: 'a2', type: 'Sell', asset: 'HELD2', date: 'Nov 17, 2026', amount: 900, cashBasisAmount: 1000 },
+      { id: 'a3', type: 'Buy', asset: 'HELD1', date: 'Nov 16, 2026', amount: 500 }
+    );
+  `, ctx);
+
+  assert.equal(vm.runInContext(`activityRealizedPnl(activities[0])`, ctx), 100);
+  assert.equal(vm.runInContext(`activityRealizedPnl(activities[1])`, ctx), -100);
+  assert.equal(vm.runInContext(`activityRealizedPnl(activities[2])`, ctx), null);
+
+  vm.runInContext(`state.activityType = 'Switch'; state.activitySearch = 'held2';`, ctx);
+  const filtered = JSON.parse(vm.runInContext(`JSON.stringify(filteredActivitiesList())`, ctx));
+  assert.equal(filtered.length, 1);
+  assert.equal(filtered[0].id, 'a1');
+
+  const closedCosted = JSON.parse(vm.runInContext(`JSON.stringify(closedHoldingRowInfo(holdings[3]))`, ctx));
+  assert.equal(closedCosted.pnl, 200);
+  assert.ok(Math.abs(closedCosted.pnlPct - 20) < 1e-6);
+
+  const closedUncosted = JSON.parse(vm.runInContext(`JSON.stringify(closedHoldingRowInfo(holdings[4]))`, ctx));
+  assert.equal(closedUncosted.pnl, null);
+  assert.equal(closedUncosted.cost, null);
+
+  const navItems = JSON.parse(vm.runInContext(`JSON.stringify(navUpdaterItems())`, ctx));
+  assert.equal(navItems.map((i) => i.symbol).join(), 'HELD2,HELD1');
+  assert.equal(navItems[0].hasEntry, false);
+  assert.equal(navItems[1].hasEntry, true);
 });

@@ -33,7 +33,12 @@ const state = {
   tableSearch: "",
   tableBank: "",
   tableCategory: "",
+  tableRiskTier: "",
+  holdingsScope: "active",
   allocationBank: "",
+  allocationMode: "category",
+  activitySearch: "",
+  activityType: "",
   privacyMode: false,
   chartMode: "pnl",
   holdingsView: "overview",
@@ -627,10 +632,21 @@ function dividendTotalsForFund(symbol) {
 
 function money(value, decimals = 2) {
   const config = currencyConfig[state.currency];
-  return `${config.symbol}${(value * config.rate).toLocaleString("en-US", {
+  const converted = Number(value || 0) * config.rate;
+  const threshold = decimals > 0 ? 0.5 / Math.pow(10, decimals) : 0.5;
+  const isNegative = converted <= -threshold;
+  const absValue = Math.abs(converted) < threshold ? 0 : Math.abs(converted);
+  return `${isNegative ? "−" : ""}${config.symbol}${absValue.toLocaleString("en-US", {
     minimumFractionDigits: decimals,
     maximumFractionDigits: decimals,
   })}`;
+}
+
+function signedPctText(value, decimals = 2) {
+  const numeric = Number(value || 0);
+  const threshold = decimals > 0 ? 0.5 / Math.pow(10, decimals) : 0.5;
+  if (Math.abs(numeric) < threshold) return `${(0).toFixed(decimals)}%`;
+  return `${numeric > 0 ? "+" : "−"}${Math.abs(numeric).toFixed(decimals)}%`;
 }
 
 function nav(value) {
@@ -981,6 +997,11 @@ function archivedRawHoldings() {
   return holdings.filter((item) => !isCashHolding(item) && isArchivedFund(item));
 }
 
+// Closed tab rows: archived funds that actually recorded a sale (skip empty archive stubs).
+function closedPositionHoldings() {
+  return archivedRawHoldings().filter((item) => Number(item.archivedUnits || 0) > 0 || Number(item.archivedSaleAmount || 0) > 0);
+}
+
 function funds() {
   const raw = activeRawHoldings().map(deriveFund);
   const investedValue = raw.reduce((sum, item) => sum + item.updatedAmount, 0);
@@ -1179,11 +1200,25 @@ function filterableText(item) {
     .toLowerCase();
 }
 
+function assetRiskTier(item = {}) {
+  const category = String(item.category || "");
+  if (isCashHolding(item) || category === FIXED_INCOME_CATEGORY || category === "Money Market" || category === CASH_CATEGORY) {
+    return "Core";
+  }
+  return "Risk";
+}
+
+function colorForAllocationGroup(key, mode) {
+  if (mode === "tier") return key === "Core" ? "#315dff" : "#8b5cf6";
+  return colorForCategory(key);
+}
+
 function filteredHoldingsList(list) {
   const query = state.tableSearch.trim().toLowerCase();
   return list.filter((item) => {
     if (state.tableBank && item.bank !== state.tableBank) return false;
     if (state.tableCategory && item.category !== state.tableCategory) return false;
+    if (state.tableRiskTier && assetRiskTier(item) !== state.tableRiskTier) return false;
     if (query && !filterableText(item).includes(query)) return false;
     return true;
   });
@@ -1423,7 +1458,7 @@ function renderHero() {
   }
 }
 
-function renderHoldingFilters(allList, visibleList) {
+function renderHoldingFilters(allList, visibleList, closedAllList = closedPositionHoldings()) {
   const bankOptions = uniqueSorted(allList.map((item) => item.bank));
   const categoryOptions = uniqueSorted(allList.map((item) => item.category));
   if (state.tableBank && !bankOptions.includes(state.tableBank)) state.tableBank = "";
@@ -1434,6 +1469,15 @@ function renderHoldingFilters(allList, visibleList) {
   const categorySelect = document.querySelector("#holdingCategoryFilter");
   const countNode = document.querySelector("#holdingFilterCount");
   const resetButton = document.querySelector("#holdingFilterReset");
+  const activeCountNode = document.querySelector("#activeHoldingsCount");
+  const closedCountNode = document.querySelector("#closedHoldingsCount");
+  const activePillsNode = document.querySelector("#holdingActivePills");
+
+  if (activeCountNode) activeCountNode.textContent = String(funds().length);
+  if (closedCountNode) closedCountNode.textContent = String(closedAllList.length);
+  document.querySelectorAll("[data-holdings-scope]").forEach((button) => {
+    button.setAttribute("aria-pressed", String(button.dataset.holdingsScope === state.holdingsScope));
+  });
 
   if (searchInput && document.activeElement !== searchInput) searchInput.value = state.tableSearch;
   if (bankSelect) bankSelect.innerHTML = optionMarkup(bankOptions, state.tableBank, "All banks");
@@ -1441,34 +1485,191 @@ function renderHoldingFilters(allList, visibleList) {
   if (countNode) {
     const shown = visibleList.length;
     const total = allList.length;
-    countNode.textContent = shown === total
-      ? `${total} asset${total === 1 ? "" : "s"}`
-      : `${shown} of ${total} asset${total === 1 ? "" : "s"}`;
+    const noun = state.holdingsScope === "closed" ? "closed fund" : "asset";
+    // The Active/Closed tabs already show totals; only show a count while filters hide rows.
+    countNode.hidden = shown === total;
+    countNode.textContent = `${shown} of ${total} ${noun}${total === 1 ? "" : "s"}`;
   }
-  if (resetButton) resetButton.disabled = !state.tableSearch && !state.tableBank && !state.tableCategory;
+  if (resetButton) {
+    resetButton.disabled = !state.tableSearch && !state.tableBank && !state.tableCategory && !state.tableRiskTier;
+  }
+
+  if (activePillsNode) {
+    const pills = [];
+    if (state.tableRiskTier) {
+      pills.push(`<button type="button" class="active-filter-chip" data-clear-filter="tier">Allocation: ${htmlAttr(state.tableRiskTier)} <span aria-hidden="true">×</span></button>`);
+    }
+    if (state.tableBank) {
+      pills.push(`<button type="button" class="active-filter-chip" data-clear-filter="bank">Bank: ${htmlAttr(state.tableBank)} <span aria-hidden="true">×</span></button>`);
+    }
+    if (state.tableCategory) {
+      pills.push(`<button type="button" class="active-filter-chip" data-clear-filter="category">Category: ${htmlAttr(state.tableCategory)} <span aria-hidden="true">×</span></button>`);
+    }
+    activePillsNode.innerHTML = pills.join("");
+    activePillsNode.hidden = pills.length === 0;
+    activePillsNode.querySelectorAll("[data-clear-filter]").forEach((chip) => {
+      chip.addEventListener("click", () => {
+        if (chip.dataset.clearFilter === "tier") state.tableRiskTier = "";
+        else if (chip.dataset.clearFilter === "bank") state.tableBank = "";
+        else if (chip.dataset.clearFilter === "category") state.tableCategory = "";
+        renderHoldings();
+        renderAllocation();
+      });
+    });
+  }
 }
 
-function renderHoldings() {
-  const body = document.querySelector("#holdingsBody");
-  const allHoldings = funds();
-  const sorted = getSortedHoldings();
-  const total = totalsForList(sorted);
-  renderHoldingFilters(allHoldings, sorted);
+function closedHoldingRowInfo(raw) {
+  const proceeds = Number(raw.archivedSaleAmount || 0);
+  const pnl = Number(raw.archivedPnl || 0);
+  const impliedCost = proceeds - pnl;
+  const rawPct = raw.archivedPnlPct;
+  const pnlPct = rawPct !== undefined && rawPct !== null && Number.isFinite(Number(rawPct))
+    ? Number(rawPct)
+    : (impliedCost > 0.005 ? (pnl / impliedCost) * 100 : 0);
+  const hasRecordedCost = impliedCost > 0.005 || (Math.abs(pnl) > 0.005 && Math.abs(pnlPct) > 0.005);
+  return {
+    symbol: raw.symbol,
+    name: raw.name || raw.symbol,
+    bank: raw.bank || "Unassigned",
+    port: raw.port || "General",
+    category: normalizeFundCategory(raw.category),
+    closedDate: raw.archivedDate || "",
+    closedLabel: raw.archivedDate ? readableDate(raw.archivedDate) : (raw.archivedAt || "—"),
+    units: Number(raw.archivedUnits || 0),
+    proceeds,
+    cost: hasRecordedCost ? impliedCost : null,
+    pnl: hasRecordedCost ? pnl : null,
+    pnlPct: hasRecordedCost ? pnlPct : null,
+  };
+}
 
-  if (sorted.length === 0) {
-    const hasAssets = allHoldings.length > 0;
-    body.innerHTML = `
-      <tr class="empty-table-row">
-        <td colspan="12">
-          <div class="empty-table-state">
-            <strong>${hasAssets ? "No assets match these filters" : "No investments or cash yet"}</strong>
-            <span>${hasAssets ? "Adjust the search, bank, or category filter to show more rows." : "Add a fund, deposit cash, or import JSON to start tracking portfolio value."}</span>
-          </div>
-        </td>
-      </tr>
-    `;
-  } else {
-    body.innerHTML = sorted.map((item) => isCashHolding(item) ? `
+function renderClosedHoldings() {
+  const wrap = document.querySelector("#closedHoldingsWrap");
+  if (!wrap) return;
+  const allClosed = closedPositionHoldings().map(closedHoldingRowInfo);
+  const visible = filteredHoldingsList(allClosed).sort((a, b) => compareText(b.closedDate, a.closedDate) || compareText(a.symbol, b.symbol));
+  renderHoldingFilters(allClosed, visible, closedPositionHoldings());
+
+  if (visible.length === 0) {
+    wrap.innerHTML = `
+      <div class="empty-table-state">
+        <strong>${allClosed.length ? "No closed funds match these filters" : "No closed positions yet"}</strong>
+        <span>${allClosed.length ? "Adjust the search, bank, or category filter to see closed positions." : "Funds you fully sell or switch out of will appear here with realized P&L."}</span>
+      </div>`;
+    return;
+  }
+
+  const totalProceeds = visible.reduce((sum, item) => sum + item.proceeds, 0);
+  const costedItems = visible.filter((item) => item.pnl !== null);
+  const totalPnl = costedItems.reduce((sum, item) => sum + item.pnl, 0);
+  const totalCost = costedItems.reduce((sum, item) => sum + Number(item.cost || 0), 0);
+  const totalPnlPct = totalCost > 0 ? (totalPnl / totalCost) * 100 : 0;
+  const uncostedCount = visible.length - costedItems.length;
+  const totalTone = totalPnl > 0.005 ? "green" : totalPnl < -0.005 ? "red" : "neutral";
+
+  wrap.innerHTML = `
+    <div class="closed-table-scroll">
+      <table class="closed-holdings-table">
+        <thead>
+          <tr>
+            <th>Fund</th>
+            <th>Bank / Port</th>
+            <th>Category</th>
+            <th>Closed date</th>
+            <th>Units sold</th>
+            <th>Proceeds</th>
+            <th>Realized P&amp;L</th>
+            <th>Return %</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${visible.map((item) => {
+            const tone = item.pnl === null ? "neutral" : item.pnl > 0.005 ? "green" : item.pnl < -0.005 ? "red" : "neutral";
+            return `
+              <tr data-closed-symbol="${htmlAttr(item.symbol)}">
+                <td data-label="Fund">
+                  <div class="asset-cell">
+                    <span class="asset-name">
+                      <strong><button type="button" class="fund-details-link" data-fund-insight="${htmlAttr(item.symbol)}">${htmlAttr(item.symbol)}</button></strong>
+                      <span title="${htmlAttr(item.name)}">${htmlAttr(item.name)}</span>
+                      <small class="holding-mobile-meta">${htmlAttr(item.bank)} · ${htmlAttr(item.port)} · Closed ${htmlAttr(item.closedLabel)}</small>
+                    </span>
+                  </div>
+                </td>
+                <td data-label="Bank / Port"><strong>${htmlAttr(item.bank)}</strong><span class="cell-note">${htmlAttr(item.port)}</span></td>
+                <td data-label="Category"><span class="category-pill" style="--pill-color:${colorForCategory(item.category)}">${htmlAttr(item.category)}</span></td>
+                <td data-label="Closed date">${htmlAttr(item.closedLabel)}</td>
+                <td class="private-value" data-label="Units sold">${item.units.toLocaleString("en-US", { minimumFractionDigits: 4, maximumFractionDigits: 4 })}</td>
+                <td class="private-value" data-label="Proceeds">${money(item.proceeds)}</td>
+                <td class="${tone}" data-label="Realized P&L">${item.pnl === null ? '<span class="muted-note">Cost not recorded</span>' : `<span class="private-value">${signedMoney(item.pnl)}</span><small class="holding-mobile-return">${pct(item.pnlPct)}</small>`}</td>
+                <td class="${tone}" data-label="Return %">${item.pnlPct === null ? "—" : pct(item.pnlPct)}</td>
+              </tr>`;
+          }).join("")}
+          <tr class="total-row">
+            <td>Realized · all time<span class="holding-mobile-meta">${visible.length} fund${visible.length === 1 ? "" : "s"}${uncostedCount ? ` · ${uncostedCount} uncosted` : ""}</span></td>
+            <td></td>
+            <td>${costedItems.length} of ${visible.length} costed</td>
+            <td></td>
+            <td></td>
+            <td class="private-value" data-label="Total proceeds">${money(totalProceeds)}</td>
+            <td class="${totalTone}" data-label="Realized P&L">${costedItems.length ? `<span class="private-value">${signedMoney(totalPnl)}</span>${totalCost > 0 ? `<small class="holding-mobile-return">${pct(totalPnlPct)}</small>` : ""}` : "—"}</td>
+            <td class="${totalTone}">${totalCost > 0 ? pct(totalPnlPct) : "—"}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>`;
+
+  wrap.querySelectorAll("[data-fund-insight]").forEach((button) => {
+    button.addEventListener("click", () => openFundInsight(button.dataset.fundInsight));
+  });
+}
+
+function fundSparklineMarkup(symbol) {
+  const raw = holdings.find((item) => item.symbol === symbol);
+  if (!raw) return "";
+  const points = normalizeNavHistory(raw)
+    .filter((entry) => entry.date <= activeDateKey() && Number(entry.nav) > 0)
+    .slice(-30);
+  if (points.length < 2) return "";
+
+  const values = points.map((entry) => Number(entry.nav));
+  const first = values[0];
+  const last = values.at(-1);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = max - min;
+  const width = 58;
+  const height = 20;
+  const padX = 2;
+  const padY = 3;
+  const plotW = width - padX * 2;
+  const plotH = height - padY * 2;
+
+  const coords = values.map((val, idx) => {
+    const x = padX + (idx / (values.length - 1)) * plotW;
+    const y = span > 0 ? padY + (1 - (val - min) / span) * plotH : height / 2;
+    return [x, y];
+  });
+  const path = coords.map(([x, y], idx) => `${idx === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+  const baselineY = coords[0][1].toFixed(1);
+  const [endX, endY] = coords.at(-1);
+  const changePct = first > 0 ? ((last - first) / first) * 100 : 0;
+  const tone = Math.abs(changePct) < 0.15 ? "flat" : changePct > 0 ? "up" : "down";
+  const label = `NAV trend, ${points.length} recorded days: ${signedPctText(changePct)} (${readableDate(points[0].date)} – ${readableDate(points.at(-1).date)})`;
+
+  return `<svg class="holding-sparkline ${tone}" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" aria-hidden="true"><title>${htmlAttr(label)}</title><line class="spark-base" x1="${padX}" y1="${baselineY}" x2="${width - padX}" y2="${baselineY}" /><path class="spark-line" d="${path}" /><circle class="spark-dot" cx="${endX.toFixed(1)}" cy="${endY.toFixed(1)}" r="1.8" /></svg>`;
+}
+
+function holdingWeightMarkup(value, portfolioTotalValue) {
+  if (!(portfolioTotalValue > 0) || !(value > 0)) return "";
+  const weightPct = (value / portfolioTotalValue) * 100;
+  return `<span class="holding-weight" title="${weightPct.toFixed(2)}% of total portfolio"><small>${weightPct.toFixed(1)}% of portfolio</small></span>`;
+}
+
+function holdingRowMarkup(item, portfolioTotalValue) {
+  if (isCashHolding(item)) {
+    return `
     <tr data-symbol="${htmlAttr(item.symbol)}" class="cash-row">
       <td data-label="Fund">
         <div class="asset-cell">
@@ -1482,7 +1683,7 @@ function renderHoldings() {
       <td data-label="Buying NAV">N/A</td>
       <td data-label="Daily NAV %"><span class="neutral">0.00%</span></td>
       <td data-label="Current NAV">N/A</td>
-      <td data-label="Current Value"><span class="private-value">${money(item.currentValue)}</span></td>
+      <td data-label="Current Value"><span class="value-with-weight"><span class="private-value">${money(item.currentValue)}</span>${holdingWeightMarkup(item.currentValue, portfolioTotalValue)}</span></td>
       <td data-label="P&L">N/A</td>
       <td class="${item.pnlPct >= 0 ? "green" : "red"}" data-label="P&L (%)">${pct(item.pnlPct)}</td>
       <td data-label="">
@@ -1491,12 +1692,14 @@ function renderHoldings() {
           <span>Edit</span>
         </button>
       </td>
-    </tr>
-  ` : `
+    </tr>`;
+  }
+  return `
     <tr data-symbol="${item.symbol}">
       <td data-label="Fund">
         <div class="asset-cell">
-          <span class="asset-name"><strong>${item.symbol}${item.navCurrency && item.navCurrency !== "THB" ? ` <span class="ccy-chip" title="NAV in ${item.navCurrency}, valued at ${nav(item.fxRate)} THB/${item.navCurrency}">${item.navCurrency}</span>` : ""}</strong><span>${htmlAttr(item.name)}</span><small class="holding-mobile-meta">${htmlAttr(item.bank)} · ${htmlAttr(item.port)}</small></span>
+          <span class="asset-name"><strong>${item.symbol}${item.navCurrency && item.navCurrency !== "THB" ? ` <span class="ccy-chip" title="NAV in ${item.navCurrency}, valued at ${nav(item.fxRate)} THB/${item.navCurrency}">${item.navCurrency}</span>` : ""}</strong><span title="${htmlAttr(item.name)}">${htmlAttr(item.name)}</span><small class="holding-mobile-meta">${htmlAttr(item.bank)} · ${htmlAttr(item.port)}</small></span>
+          ${fundSparklineMarkup(item.symbol)}
         </div>
       </td>
       <td data-label="Bank / Port"><strong>${item.bank}</strong><span class="cell-note">${item.port}</span></td>
@@ -1516,12 +1719,13 @@ function renderHoldings() {
       </td>
       ${item.navCurrency && item.navCurrency !== "THB" ? `
       <td data-label="Current Value">
-        <span class="fund-value-cell">
+        <span class="fund-value-cell value-with-weight">
           <input class="fund-value-input private-input" type="text" inputmode="decimal" value="${money(item.currentValue)}" data-symbol="${item.symbol}" title="Type the value shown in your bank app. The FX rate (currently ${nav(item.fxRate)} THB/${item.navCurrency}) is derived automatically." aria-label="${item.symbol} current value in ${state.currency}" />
+          ${holdingWeightMarkup(item.currentValue, portfolioTotalValue)}
         </span>
       </td>` : `
-      <td data-label="Current Value"><span class="private-value">${money(item.currentValue)}</span></td>`}
-      <td class="holding-return ${item.pnlBaht >= 0 ? "green" : "red"}" data-label="P&L"><span class="private-value">${money(item.pnlBaht)}</span><small class="holding-mobile-return">${pct(item.pnlPct)}</small></td>
+      <td data-label="Current Value"><span class="value-with-weight"><span class="private-value">${money(item.currentValue)}</span>${holdingWeightMarkup(item.currentValue, portfolioTotalValue)}</span></td>`}
+      <td class="holding-return ${item.pnlBaht >= 0 ? "green" : "red"}" data-label="P&L"><span class="private-value">${signedMoney(item.pnlBaht)}</span><small class="holding-mobile-return">${pct(item.pnlPct)}</small></td>
       <td class="${item.pnlPct >= 0 ? "green" : "red"}" data-label="P&L (%)">${pct(item.pnlPct)}</td>
       <td data-label="">
         <button class="table-action-button" type="button" data-edit-fund="${item.symbol}" aria-label="Edit ${item.symbol}">
@@ -1529,8 +1733,49 @@ function renderHoldings() {
           <span>Edit</span>
         </button>
       </td>
-    </tr>
-  `).join("") + `
+    </tr>`;
+}
+
+function renderHoldings() {
+  const activeWrap = document.querySelector("#activeHoldingsWrap");
+  const closedWrap = document.querySelector("#closedHoldingsWrap");
+  const mobileSortWrap = document.querySelector(".holding-mobile-sort");
+  const viewSwitch = document.querySelector(".holdings-view");
+  const isClosed = state.holdingsScope === "closed";
+
+  const panel = document.querySelector(".holdings-panel");
+  if (panel) panel.classList.toggle("is-closed-scope", isClosed);
+  if (activeWrap) activeWrap.hidden = isClosed;
+  if (closedWrap) closedWrap.hidden = !isClosed;
+  if (mobileSortWrap) mobileSortWrap.hidden = isClosed;
+  if (viewSwitch) viewSwitch.hidden = isClosed;
+
+  if (isClosed) {
+    renderClosedHoldings();
+    return;
+  }
+
+  const body = document.querySelector("#holdingsBody");
+  const allHoldings = funds();
+  const sorted = getSortedHoldings();
+  const total = totalsForList(sorted);
+  const portfolioTotalValue = totalsForList(allHoldings).fundValue;
+  renderHoldingFilters(allHoldings, sorted);
+
+  if (sorted.length === 0) {
+    const hasAssets = allHoldings.length > 0;
+    body.innerHTML = `
+      <tr class="empty-table-row">
+        <td colspan="12">
+          <div class="empty-table-state">
+            <strong>${hasAssets ? "No assets match these filters" : "No investments or cash yet"}</strong>
+            <span>${hasAssets ? "Adjust the search, bank, or category filter to show more rows." : "Add a fund, deposit cash, or import JSON to start tracking portfolio value."}</span>
+          </div>
+        </td>
+      </tr>
+    `;
+  } else {
+    body.innerHTML = sorted.map((item) => holdingRowMarkup(item, portfolioTotalValue)).join("") + `
     <tr class="total-row">
       <td>Total<span class="holding-mobile-meta">${sorted.length} visible asset${sorted.length === 1 ? "" : "s"}</span></td>
       <td></td>
@@ -1540,8 +1785,8 @@ function renderHoldings() {
       <td></td>
       <td></td>
       <td></td>
-      <td data-label="Current value"><span class="private-value">${money(total.fundValue)}</span></td>
-      <td data-label="Unrealized P&L" class="${total.pnl >= 0 ? "green" : "red"}"><span class="private-value">${money(total.pnl)}</span><small class="holding-mobile-return">${pct(total.pnlPct)}</small></td>
+      <td data-label="Current value"><span class="value-with-weight"><span class="private-value">${money(total.fundValue)}</span>${portfolioTotalValue > 0 ? `<span class="holding-weight total-weight"><small>${((total.fundValue / portfolioTotalValue) * 100).toFixed(1)}%</small></span>` : ""}</span></td>
+      <td data-label="Unrealized P&L" class="${total.pnl >= 0 ? "green" : "red"}"><span class="private-value">${signedMoney(total.pnl)}</span><small class="holding-mobile-return">${pct(total.pnlPct)}</small></td>
       <td class="${total.pnlPct >= 0 ? "green" : "red"}">${pct(total.pnlPct)}</td>
       <td></td>
     </tr>
@@ -1704,13 +1949,69 @@ function updateCurrentNav(symbol, value) {
   showToast(`${symbol} current NAV for ${readableDate(navDate)} saved at ${nav(value)}. Daily NAV is ${Number(fund.dailyChangePct || 0).toFixed(2)}%.`);
 }
 
+function activityRealizedPnl(activity) {
+  if (!activity || (activity.type !== "Sell" && activity.type !== "Switch")) return null;
+  if (activity.type === "Switch") {
+    const cost = Number(activity.switch?.sourceCostRemovedTHB ?? activity.switch?.sourceCostRemoved);
+    const proceeds = Number(activity.switch?.amount ?? activity.amount);
+    if (cost > 0.005 && Number.isFinite(proceeds)) return proceeds - cost;
+    return null;
+  }
+  const proceeds = Number(activity.amount);
+  const cost = Number(activity.cashBasisAmount);
+  if (cost > 0.005 && Number.isFinite(proceeds)) return proceeds - cost;
+  const date = dateKeyFromActivityDate(activity.date);
+  const closed = archivedRawHoldings().find((holding) => holding.symbol === activity.asset
+    && holding.archivedDate === date
+    && Math.abs(Number(holding.archivedSaleAmount) - proceeds) < 0.01);
+  const closedCost = closed ? Number(closed.archivedSaleAmount) - Number(closed.archivedPnl) : 0;
+  if (closedCost > 0.005) return Number(closed.archivedPnl);
+  return null;
+}
+
+function filteredActivitiesList(allItems = sortedActivities()) {
+  const query = state.activitySearch.trim().toLowerCase();
+  const typeFilter = state.activityType;
+  return allItems.filter((item) => {
+    if (typeFilter && item.type !== typeFilter) return false;
+    if (query) {
+      const searchable = [
+        item.type,
+        item.asset,
+        item.date,
+        item.switch?.fromSymbol,
+        item.switch?.toSymbol,
+        item.cashBank,
+        item.cashPort,
+      ].join(" ").toLowerCase();
+      if (!searchable.includes(query)) return false;
+    }
+    return true;
+  });
+}
+
 function renderActivities() {
   const list = document.querySelector("#activityList");
-  const visibleActivities = sortedActivities();
+  const allActivities = sortedActivities();
+  const visibleActivities = filteredActivitiesList(allActivities);
+  const countNode = document.querySelector("#activityCount");
+  const searchInput = document.querySelector("#activitySearchInput");
+
+  if (searchInput && document.activeElement !== searchInput) searchInput.value = state.activitySearch;
+  document.querySelectorAll("[data-activity-type]").forEach((button) => {
+    button.setAttribute("aria-pressed", String(button.dataset.activityType === state.activityType));
+  });
+  if (countNode) {
+    countNode.textContent = visibleActivities.length === allActivities.length
+      ? `${allActivities.length}`
+      : `${visibleActivities.length} of ${allActivities.length}`;
+  }
+
   if (visibleActivities.length === 0) {
     list.innerHTML = `
       <div class="empty-panel-state">
-        <strong>No activity yet</strong>
+        <strong>${allActivities.length ? "No matching activity" : "No activity yet"}</strong>
+        ${allActivities.length ? "<span>Try clearing the search or type filter.</span>" : ""}
       </div>
     `;
     return;
@@ -1758,13 +2059,17 @@ function activityRowMarkup(item) {
     ? `${item.switch.fromSymbol} → ${item.switch.toSymbol}`
     : item.asset || "Cash";
   const { note, quantity } = activityMeta(item);
+  const realized = activityRealizedPnl(item);
+  const realizedPill = realized !== null && Math.abs(realized) >= 0.5
+    ? `<span class="activity-pnl-pill ${realized > 0 ? "green" : "red"} private-value" title="Realized P&L">${signedMoney(realized, 0)}</span>`
+    : "";
   const label = [item.type, asset, activityAmountLabel(item)].join(", ");
   return `
     <div class="activity-row" data-type="${type.toLowerCase()}" data-edit-activity="${htmlAttr(item.id)}" role="button" tabindex="0" aria-label="Edit ${htmlAttr(label)}">
       <span class="activity-icon" aria-hidden="true"><svg viewBox="0 0 24 24">${activityTypeIcons[type]}</svg></span>
       <span class="activity-main">
         <strong title="${htmlAttr(asset)}">${htmlAttr(asset)}</strong>
-        <small><span class="activity-type">${htmlAttr(item.type)}</span>${note ? ` · <span class="private-value">${htmlAttr(note)}</span>` : ""}</small>
+        <small><span class="activity-type">${htmlAttr(item.type)}</span>${note ? ` · <span class="private-value">${htmlAttr(note)}</span>` : ""}${realizedPill}</small>
       </span>
       <span class="activity-transaction">
         <b class="private-value">${activityAmountLabel(item)}</b>
@@ -2272,6 +2577,26 @@ function recordedDailyPnl(snapshot) {
 }
 
 function performanceObservations(snapshots, mode) {
+  if (mode === "return") {
+    let index = 1;
+    let started = false;
+    return snapshots.map((snapshot) => {
+      const amount = recordedDailyPnl(snapshot);
+      if (amount === null) {
+        return {
+          ...snapshot,
+          dailyReturnPct: null,
+          chartValue: started && snapshot?.carriedForward ? (index - 1) * 100 : null,
+        };
+      }
+      const storedPct = snapshot.dayPnlDeltaPct == null || snapshot.dayPnlDeltaPct === "" ? NaN : Number(snapshot.dayPnlDeltaPct);
+      const base = Number(snapshot.totalFundValue) - amount;
+      const dayPct = Number.isFinite(storedPct) ? storedPct : base > 0 ? (amount / base) * 100 : 0;
+      index *= 1 + dayPct / 100;
+      started = true;
+      return { ...snapshot, dailyReturnPct: dayPct, chartValue: (index - 1) * 100 };
+    });
+  }
   return snapshots.map((snapshot) => ({
     ...snapshot,
     chartValue: mode === "daily" ? recordedDailyPnl(snapshot)
@@ -2289,6 +2614,15 @@ function chartAxisLabel(value, config) {
   return `${sign}${config.symbol}${scaled}`;
 }
 
+function chartPctAxisLabel(value) {
+  const numeric = Number(value || 0);
+  if (Math.abs(numeric) < 0.005) return "0%";
+  const sign = numeric > 0 ? "+" : "−";
+  const abs = Math.abs(numeric);
+  const formatted = abs >= 10 ? Number(abs.toFixed(1)).toString() : Number(abs.toFixed(2)).toString();
+  return `${sign}${formatted}%`;
+}
+
 function bindPerformanceChartTooltip(svg) {
   const wrap = svg.closest(".line-chart");
   const tooltip = document.querySelector("#performanceTooltip");
@@ -2298,12 +2632,21 @@ function bindPerformanceChartTooltip(svg) {
   const show = (point) => {
     const amount = Number(point.dataset.amount);
     const daily = point.dataset.daily === "" ? null : Number(point.dataset.daily);
+    const dailyPct = point.dataset.dailyPct === "" || point.dataset.dailyPct === undefined ? null : Number(point.dataset.dailyPct);
     const privateMoney = (value) => state.privacyMode ? "••••" : signedMoney(value, 2);
     const tone = amount > 0 ? "green" : amount < 0 ? "red" : "neutral";
+    const dailyTone = dailyPct !== null ? (dailyPct > 0 ? "green" : dailyPct < 0 ? "red" : "neutral") : "";
+    const headlineLabel = state.chartMode === "value" ? "Portfolio value"
+      : state.chartMode === "pnl" ? chartLabels().pnl
+      : state.chartMode === "return" ? "Return (TWR)" : "Daily P&L";
+    const headlineValue = state.chartMode === "value" ? (state.privacyMode ? "••••" : money(amount))
+      : state.chartMode === "return" ? signedPctText(amount)
+      : privateMoney(amount);
     tooltip.innerHTML = `
       <strong>${htmlAttr(readableDate(point.dataset.date))}</strong>
-      <div class="chart-tooltip-row"><span>${state.chartMode === "value" ? "Portfolio value" : state.chartMode === "pnl" ? chartLabels().pnl : "Daily P&L"}</span><b class="${state.chartMode === "value" ? "" : tone}">${state.chartMode === "value" ? (state.privacyMode ? "••••" : money(amount)) : privateMoney(amount)}</b></div>
-      ${state.chartMode !== "daily" ? `<div class="chart-tooltip-row"><span>${state.chartMode === "pnl" ? "P&L (%)" : chartLabels().pnl}</span><b>${state.chartMode === "pnl" ? "" : privateMoney(Number(point.dataset.pnl)) + " · "}${Number(point.dataset.pnlPct).toFixed(2)}%</b></div>` : ""}
+      <div class="chart-tooltip-row"><span>${headlineLabel}</span><b class="${state.chartMode === "value" ? "" : tone}">${headlineValue}</b></div>
+      ${state.chartMode === "return" ? `<div class="chart-tooltip-row"><span>Daily move</span><b class="${dailyTone}">${dailyPct === null ? "Carried forward" : signedPctText(dailyPct)}</b></div><div class="chart-tooltip-row"><span>Daily P&L</span><b>${daily === null ? "Not recorded" : privateMoney(daily)}</b></div>` : ""}
+      ${state.chartMode === "value" || state.chartMode === "pnl" ? `<div class="chart-tooltip-row"><span>${state.chartMode === "pnl" ? "P&L (%)" : chartLabels().pnl}</span><b>${state.chartMode === "pnl" ? "" : privateMoney(Number(point.dataset.pnl)) + " · "}${Number(point.dataset.pnlPct).toFixed(2)}%</b></div>` : ""}
       ${state.chartMode === "value" ? `<div class="chart-tooltip-row"><span>${chartLabels().cost}</span><b>${state.privacyMode ? "••••" : money(Number(point.dataset.cost))}</b></div>` : ""}
       ${state.chartMode === "pnl" ? `<div class="chart-tooltip-row"><span>Daily P&L</span><b>${daily === null ? "Not recorded" : privateMoney(daily)}</b></div>` : ""}
       ${point.dataset.source ? `<small>Last recorded ${htmlAttr(readableDate(point.dataset.source))}; carried forward.</small>` : ""}`;
@@ -2445,8 +2788,8 @@ function renderReturnRisk(range, startKey, endKey, sourceSnapshots) {
   const sales = realized.counted + realized.unknown;
   const realizedTile = realized.counted > 0
     ? tile("Profit from sales", privateMoney(realized.amount), tone(realized.amount), realized.unknown > 0
-      ? `${realized.counted} of ${plural(sales, "sale")} costed`
-      : plural(sales, "sale"))
+      ? `${realized.counted} of ${plural(sales, "sale")} costed · this range`
+      : `${plural(sales, "sale")} · this range`)
     : empty("Profit from sales", sales > 0 ? `${plural(sales, "sale")}, no cost` : "No sales");
 
   let caption, tiles;
@@ -2485,13 +2828,17 @@ function renderChart(range = "1W") {
   const insights = document.querySelector("#chartInsights");
   const mode = state.chartMode;
   const seriesLabels = chartLabels();
-  const name = mode === "value" ? "Portfolio value" : mode === "daily" ? "Daily P&L" : seriesLabels.pnl;
+  const name = mode === "value" ? "Portfolio value"
+    : mode === "daily" ? "Daily P&L"
+    : mode === "return" ? "Return (TWR)" : seriesLabels.pnl;
   const description = mode === "value"
     ? `Holdings and cash versus ${seriesLabels.cost.toLowerCase()}. Changes can include money added or withdrawn.`
     : mode === "pnl"
     ? hasCapitalTracking()
       ? "Value minus capital invested at each date. Includes realized gains and dividends; only money added or withdrawn moves the capital line."
       : "Value minus cost of holdings at each date. Excludes realized gains and dividends; selling a holding can reduce this balance."
+    : mode === "return"
+    ? "Cumulative time-weighted return chained from recorded daily NAV moves only, so deposits and withdrawals never distort performance."
     : "Recorded daily NAV movement. Dates without a recorded daily figure are left blank.";
   document.querySelector(".chart-legend").innerHTML = mode === "value"
     ? `<span><i class="legend-line solid"></i> Portfolio value</span><span><i class="legend-area"></i> ${seriesLabels.cost}</span>`
@@ -2505,14 +2852,19 @@ function renderChart(range = "1W") {
   const available = observations.filter((item) => item.chartValue !== null && Number.isFinite(item.chartValue));
   const last = available.at(-1);
   document.querySelector(".chart-footnote").hidden = !last;
-  const privateMoney = (value) => `<span class="private-value">${mode === "value" ? money(value, 0) : signedMoney(value, 0)}</span>`;
-  const tone = (value) => mode === "value" ? "" : value > 0 ? "green" : value < 0 ? "red" : "neutral";
+  const formatStat = (value) => mode === "return"
+    ? signedPctText(value)
+    : `<span class="private-value">${mode === "value" ? money(value, 0) : signedMoney(value, 0)}</span>`;
+  const tone = (value) => mode === "value" ? "" : value > 0.0005 ? "green" : value < -0.0005 ? "red" : "neutral";
   const high = available.length ? Math.max(...available.map((p) => p.chartValue)) : 0;
   const low = available.length ? Math.min(...available.map((p) => p.chartValue)) : 0;
   const rangeStat = (label, value) =>
-    `<div class="chart-insight"><span>${label}</span><strong class="${tone(value)}">${privateMoney(value)}</strong></div>`;
+    `<div class="chart-insight"><span>${label}</span><strong class="${tone(value)}">${formatStat(value)}</strong></div>`;
+  const dateSub = mode === "return" && available.length > 1
+    ? `${readableDate(available[0].date)} – ${readableDate(last.date)}`
+    : `${readableDate(last?.date || endKey)}${last?.carriedForward ? " · carried forward" : ""}`;
   insights.innerHTML = last ? `
-    <div class="chart-insight chart-insight-main"><span>${name} <span class="info-dot" tabindex="0" role="button" aria-label="What does ${htmlAttr(name)} show?" aria-describedby="chartInfoTooltip">i<span class="info-tooltip" id="chartInfoTooltip">${htmlAttr(description)}</span></span></span><strong class="${tone(last.chartValue)}">${privateMoney(last.chartValue)}</strong><small>${readableDate(last.date)}${last.carriedForward ? " · carried forward" : ""}</small></div>
+    <div class="chart-insight chart-insight-main"><span>${name} <span class="info-dot" tabindex="0" role="button" aria-label="What does ${htmlAttr(name)} show?" aria-describedby="chartInfoTooltip">i<span class="info-tooltip" id="chartInfoTooltip">${htmlAttr(description)}</span></span></span><strong class="${tone(last.chartValue)}">${formatStat(last.chartValue)}</strong><small>${dateSub}</small></div>
     ${rangeStat("High", high)}${rangeStat("Low", low)}`
     : `<div class="chart-insight chart-insight-main"><span>${name}</span><small>${startKey === endKey ? readableDate(endKey) : `${readableDate(startKey)} – ${readableDate(endKey)}`}</small></div>`;
   const rect = svg.closest(".line-chart").getBoundingClientRect();
@@ -2526,11 +2878,14 @@ function renderChart(range = "1W") {
     document.querySelector("#performanceTooltip").hidden = true;
     return;
   }
-  const startMs = parseDateKey(startKey).getTime();
+  const effectiveStartKey = mode === "return" && available[0].date > startKey ? available[0].date : startKey;
+  const startMs = parseDateKey(effectiveStartKey).getTime();
   const endMs = Math.max(parseDateKey(endKey).getTime(), startMs + 86400000);
   const values = available.flatMap((p) => mode === "value" ? [p.chartValue, p.totalPaid] : [p.chartValue, 0]);
   const rawMin = Math.min(...values), rawMax = Math.max(...values);
-  const padding = Math.max((rawMax - rawMin) * .12, Math.abs(rawMax) * .015, 1);
+  const padding = mode === "return"
+    ? Math.max((rawMax - rawMin) * 0.14, 0.2)
+    : Math.max((rawMax - rawMin) * 0.12, Math.abs(rawMax) * 0.015, 1);
   const labels = computeNiceTicks(rawMin - padding, rawMax + padding, 5);
   const min = labels.at(-1), max = labels[0];
   const x = (date) => left + (parseDateKey(date).getTime() - startMs) / (endMs - startMs) * width;
@@ -2540,7 +2895,10 @@ function renderChart(range = "1W") {
   const ticks = chartTickMarks(available, startMs, endMs, range, chartWidth < 500 ? 3 : 5);
   const visibleTicks = chartWidth < 500 && ticks.length > 4 ? ticks.filter((_, i) => i === 0 || i === Math.floor(ticks.length / 2) || i === ticks.length - 1) : ticks;
   const config = currencyConfig[state.currency];
-  const axis = labels.map((label) => `<line class="chart-grid" x1="${left}" y1="${y(label)}" x2="${left + width}" y2="${y(label)}"/><text class="chart-axis" x="${left - 8}" y="${y(label) + 4}" text-anchor="end">${state.privacyMode ? "••••" : chartAxisLabel(label, config)}</text>`).join("");
+  const axis = labels.map((label) => {
+    const axisText = mode === "return" ? chartPctAxisLabel(label) : state.privacyMode ? "••••" : chartAxisLabel(label, config);
+    return `<line class="chart-grid" x1="${left}" y1="${y(label)}" x2="${left + width}" y2="${y(label)}"/><text class="chart-axis" x="${left - 8}" y="${y(label) + 4}" text-anchor="end">${axisText}</text>`;
+  }).join("");
   const dates = visibleTicks.map((tick) => `<text class="chart-axis" x="${left + (tick.ms - startMs) / (endMs - startMs) * width}" y="${top + height + 28}" text-anchor="middle">${tick.label}</text>`).join("");
   const zeroLine = mode === "value" ? "" : `<line class="chart-zero" x1="${left}" y1="${zeroY}" x2="${left + width}" y2="${zeroY}"/>`;
   let plot = "";
@@ -2550,9 +2908,13 @@ function renderChart(range = "1W") {
     const capitalPath = snapshotPath(available, "totalPaid", min, max, startMs, endMs, width, height, left, top);
     const floor = (top + height).toFixed(1);
     plot = `<path class="capital-area" d="${capitalPath} L${x(last.date).toFixed(1)},${floor} L${x(available[0].date).toFixed(1)},${floor} Z"/><path class="capital-edge" d="${capitalPath}"/><path class="portfolio-line" d="${path}"/>`;
-  } else if (mode === "pnl") {
+  } else if (mode === "pnl" || mode === "return") {
     const area = `${path} L${x(last.date)},${zeroY} L${x(available[0].date)},${zeroY} Z`;
+    const peakLine = mode === "return" && high > 0.05 && last.chartValue < high - 0.1
+      ? `<line class="chart-peak-line" x1="${left}" y1="${y(high).toFixed(1)}" x2="${left + width}" y2="${y(high).toFixed(1)}"/><text class="chart-peak-label" x="${left + width}" y="${(y(high) - 5).toFixed(1)}" text-anchor="end">Peak ${chartPctAxisLabel(high)}</text>`
+      : "";
     plot = `<defs><clipPath id="profitClip"><rect x="${left}" y="${top}" width="${width}" height="${Math.max(0, zeroY - top)}"/></clipPath><clipPath id="lossClip"><rect x="${left}" y="${zeroY}" width="${width}" height="${Math.max(0, top + height - zeroY)}"/></clipPath></defs>
+      ${peakLine}
       <path d="${area}" class="pnl-area profit" clip-path="url(#profitClip)"/><path d="${area}" class="pnl-area loss" clip-path="url(#lossClip)"/>
       <path d="${path}" class="pnl-line profit" clip-path="url(#profitClip)"/><path d="${path}" class="pnl-line loss" clip-path="url(#lossClip)"/>`;
   }
@@ -2564,110 +2926,201 @@ function renderChart(range = "1W") {
     const px = x(point.date), py = y(point.chartValue);
     const daily = recordedDailyPnl(point);
     const pointTone = point.chartValue > 0 ? "profit" : point.chartValue < 0 ? "loss" : "flat";
-    const label = `${readableDate(point.date)}, ${name} ${state.privacyMode ? "values hidden" : money(point.chartValue)}, ${point.carriedForward ? "carried forward" : "recorded"}`;
+    const valueText = mode === "return" ? signedPctText(point.chartValue) : state.privacyMode ? "values hidden" : money(point.chartValue);
+    const label = `${readableDate(point.date)}, ${name} ${valueText}, ${point.carriedForward ? "carried forward" : "recorded"}`;
     const bar = mode === "daily" ? `<rect class="daily-bar ${pointTone}" x="${px - barWidth / 2}" y="${Math.min(py, zeroY)}" width="${barWidth}" height="${Math.max(2, Math.abs(py - zeroY))}" rx="2"/>` : "";
-    return `<g class="chart-point-target" data-chart-point data-date="${point.date}" data-amount="${point.chartValue}" data-pnl="${point.pnl}" data-pnl-pct="${point.pnlPct}" data-cost="${point.totalPaid}" data-daily="${daily ?? ""}" data-source="${point.carriedForward ? point.sourceDate : ""}" tabindex="${index === available.length - 1 ? 0 : -1}" role="img" aria-label="${htmlAttr(label)}">${bar}<circle class="chart-point-hit" cx="${px}" cy="${py}" r="14"/><circle class="chart-observation ${mode === "value" ? "value" : pointTone}${point.carriedForward ? " carried" : ""}${crowded && index !== available.length - 1 ? " quiet" : ""}" cx="${px}" cy="${py}" r="${mode === "daily" ? 0 : 3.5}"/></g>`;
+    const dailyPctAttr = point.dailyReturnPct == null ? "" : point.dailyReturnPct;
+    return `<g class="chart-point-target" data-chart-point data-date="${point.date}" data-amount="${point.chartValue}" data-pnl="${point.pnl}" data-pnl-pct="${point.pnlPct}" data-cost="${point.totalPaid}" data-daily="${daily ?? ""}" data-daily-pct="${dailyPctAttr}" data-source="${point.carriedForward ? point.sourceDate : ""}" tabindex="${index === available.length - 1 ? 0 : -1}" role="img" aria-label="${htmlAttr(label)}">${bar}<circle class="chart-point-hit" cx="${px}" cy="${py}" r="14"/><circle class="chart-observation ${mode === "value" ? "value" : pointTone}${point.carriedForward ? " carried" : ""}${crowded && index !== available.length - 1 ? " quiet" : ""}" cx="${px}" cy="${py}" r="${mode === "daily" ? 0 : 3.5}"/></g>`;
   }).join("");
   svg.innerHTML = axis + dates + zeroLine + plot + points;
   bindPerformanceChartTooltip(svg);
 }
 
+function buildAllocationGroups(list, mode, baseTotal) {
+  // Allocation groups by category or Core/Risk tier; per-bank totals live in the P&L by bank panel.
+  const keyFn = mode === "tier"
+    ? (item) => assetRiskTier(item)
+    : (item) => item.category || "Uncategorized";
+  const grouped = new Map();
+  list.forEach((item) => {
+    const key = keyFn(item);
+    const current = grouped.get(key) || { key, amount: 0, costBasis: 0, pnl: 0, count: 0 };
+    current.amount += Number(item.currentValue ?? item.updatedAmount ?? 0);
+    if (!isCashHolding(item)) {
+      current.costBasis += Number(item.purchaseAmount || 0);
+      current.pnl += Number(item.pnlBaht || 0);
+    }
+    current.count += 1;
+    grouped.set(key, current);
+  });
+  return [...grouped.values()]
+    .sort((a, b) => b.amount - a.amount)
+    .map((group) => ({
+      ...group,
+      pct: baseTotal > 0 ? (group.amount / baseTotal) * 100 : 0,
+      pnlPct: group.costBasis > 0 ? (group.pnl / group.costBasis) * 100 : 0,
+      color: colorForAllocationGroup(group.key, mode),
+    }));
+}
+
+function donutArcPath(cx, cy, r, startDeg, endDeg) {
+  const sweep = endDeg - startDeg;
+  if (sweep >= 359.5) {
+    return `M ${cx} ${cy - r} A ${r} ${r} 0 1 1 ${cx - 0.01} ${cy - r}`;
+  }
+  const rad = (deg) => ((deg - 90) * Math.PI) / 180;
+  const x1 = cx + r * Math.cos(rad(startDeg));
+  const y1 = cy + r * Math.sin(rad(startDeg));
+  const x2 = cx + r * Math.cos(rad(endDeg));
+  const y2 = cy + r * Math.sin(rad(endDeg));
+  const largeArc = sweep > 180 ? 1 : 0;
+  return `M ${x1.toFixed(2)} ${y1.toFixed(2)} A ${r} ${r} 0 ${largeArc} 1 ${x2.toFixed(2)} ${y2.toFixed(2)}`;
+}
+
+function activeAllocationFilterKey(mode = state.allocationMode) {
+  if (mode === "tier") return state.tableRiskTier;
+  return state.tableCategory;
+}
+
+function toggleAllocationCrossFilter(key) {
+  const mode = state.allocationMode;
+  const current = activeAllocationFilterKey(mode);
+  const next = current === key ? "" : key;
+  state.holdingsScope = "active";
+  if (mode === "tier") {
+    state.tableRiskTier = next;
+  } else {
+    state.tableCategory = next;
+  }
+  renderHoldings();
+  renderAllocation();
+  if (next) {
+    showToast(`Holdings filtered to ${next}.`);
+    document.querySelector(".holdings-panel")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  } else {
+    showToast("Allocation filter cleared.");
+  }
+}
+
 function renderAllocation() {
   const total = totals();
+  const mode = state.allocationMode || "category";
   const bankOptions = uniqueSorted(total.list.map((item) => item.bank));
   if (state.allocationBank && !bankOptions.includes(state.allocationBank)) state.allocationBank = "";
+
   const allocationSelect = document.querySelector("#allocationBankFilter");
   if (allocationSelect) allocationSelect.innerHTML = optionMarkup(bankOptions, state.allocationBank, "All banks");
+  document.querySelectorAll("[data-allocation-mode]").forEach((button) => {
+    button.setAttribute("aria-pressed", String(button.dataset.allocationMode === mode));
+  });
 
   const allocationList = state.allocationBank
     ? total.list.filter((item) => item.bank === state.allocationBank)
     : total.list;
   const allocationTotal = totalsForList(allocationList);
-  const groups = sortedGroups(groupBy(allocationList, (item) => item.category), allocationTotal.fundValue);
+  const groups = buildAllocationGroups(allocationList, mode, allocationTotal.fundValue);
   const donut = document.querySelector(".donut");
+  const svg = document.querySelector("#allocationDonutSvg");
+  const centerValue = document.querySelector(".donut-center strong");
+  const centerLabel = document.querySelector(".donut-center span");
+  const listEl = document.querySelector(".allocation-list");
+
+  if (!donut || !listEl) return;
+  donut.style.background = "none";
+  donut.__allocationGroups = groups;
+  donut.__allocationTotal = allocationTotal.fundValue;
 
   if (groups.length === 0) {
-    donut.style.background = "radial-gradient(circle at center, var(--surface) 0 42%, transparent 43%), conic-gradient(#e7ecf6 0 100%)";
-    donut.__allocationGroups = [];
-    document.querySelector(".donut-center strong").innerHTML = `<span class="private-value">${shortMoney(0)}</span>`;
-    document.querySelector(".allocation-list").innerHTML = `
+    if (svg) svg.innerHTML = '<circle class="donut-empty-ring" cx="110" cy="110" r="82" />';
+    if (centerValue) centerValue.innerHTML = `<span class="private-value">${shortMoney(0)}</span>`;
+    if (centerLabel) centerLabel.textContent = "Total Value";
+    listEl.innerHTML = `
       <div class="empty-panel-state compact">
         <strong>No allocation yet</strong>
-        <span>${state.allocationBank ? "This bank has no active assets." : "Fund categories will appear after you add holdings."}</span>
+        <span>${state.allocationBank ? "This bank has no active assets." : "Asset breakdown will appear after you add holdings."}</span>
       </div>
     `;
     return;
   }
 
-  const stops = [];
-  let cursor = 0;
+  const activeKey = activeAllocationFilterKey(mode);
+  const gapDeg = groups.length > 1 ? 1.8 : 0;
+  let cursorDeg = 0;
+  const slices = groups.map((group) => {
+    const rawSweep = (group.pct / 100) * 360;
+    const startDeg = cursorDeg + gapDeg / 2;
+    const endDeg = cursorDeg + Math.max(rawSweep - gapDeg / 2, gapDeg / 2 + 1.2);
+    cursorDeg += rawSweep;
+    const isActive = activeKey === group.key;
+    const isDimmed = Boolean(activeKey && !isActive);
+    const label = `${group.key}: ${group.pct.toFixed(1)}%${state.privacyMode ? "" : `, ${money(group.amount, 0)}`}`;
+    return `<path class="donut-slice${isActive ? " is-active" : ""}${isDimmed ? " is-dimmed" : ""}" d="${donutArcPath(110, 110, 82, startDeg, endDeg)}" stroke="${group.color}" data-allocation-key="${htmlAttr(group.key)}" tabindex="0" role="button" aria-pressed="${isActive}" aria-label="${htmlAttr(label)}" />`;
+  }).join("");
 
-  groups.forEach((group) => {
-    const next = cursor + group.pct;
-    stops.push(`${colorForCategory(group.key)} ${cursor.toFixed(2)}% ${next.toFixed(2)}%`);
-    group.startPct = cursor;
-    group.endPct = next;
-    cursor = next;
+  if (svg) svg.innerHTML = slices;
+
+  const setCenter = (group = null) => {
+    if (!centerValue || !centerLabel) return;
+    if (group) {
+      centerValue.innerHTML = `<span class="private-value">${shortMoney(group.amount)}</span>`;
+      centerLabel.textContent = `${group.key} · ${group.pct.toFixed(1)}%`;
+    } else {
+      centerValue.innerHTML = `<span class="private-value">${shortMoney(allocationTotal.fundValue)}</span>`;
+      centerLabel.textContent = state.allocationBank ? state.allocationBank : "Total Value";
+    }
+  };
+  const activeGroup = activeKey ? groups.find((g) => g.key === activeKey) : null;
+  setCenter(activeGroup);
+
+  listEl.innerHTML = groups.map((group) => {
+    const isActive = activeKey === group.key;
+    const isDimmed = Boolean(activeKey && !isActive);
+    const pnlTone = group.pnl > 0.005 ? "green" : group.pnl < -0.005 ? "red" : "neutral";
+    const pnlBadge = group.costBasis > 0
+      ? `<small class="alloc-pnl ${pnlTone}">${signedPctText(group.pnlPct, 1)}</small>`
+      : "";
+    return `
+      <button type="button" class="allocation-item${isActive ? " is-active" : ""}${isDimmed ? " is-dimmed" : ""}" data-allocation-key="${htmlAttr(group.key)}" aria-pressed="${isActive}" title="Click to filter holdings by ${htmlAttr(group.key)}">
+        <i style="background:${group.color}" aria-hidden="true"></i>
+        <span class="alloc-name">${htmlAttr(group.key)}${mode === "tier" ? `<small class="alloc-sub">${group.key === "Core" ? "Fixed Income & Cash" : "Equities & Gold"}</small>` : ""}</span>
+        <span class="alloc-metrics">
+          <b class="alloc-pct">${group.pct.toFixed(1)}%</b>
+          <span class="alloc-detail"><span class="private-value">${shortMoney(group.amount)}</span>${pnlBadge}</span>
+        </span>
+      </button>
+    `;
+  }).join("");
+
+  const highlight = (key) => {
+    const target = key ? groups.find((g) => g.key === key) : activeGroup;
+    setCenter(target);
+    donut.querySelectorAll(".donut-slice").forEach((el) => {
+      el.classList.toggle("is-hovered", Boolean(key && el.dataset.allocationKey === key));
+    });
+    listEl.querySelectorAll(".allocation-item").forEach((el) => {
+      el.classList.toggle("is-hovered", Boolean(key && el.dataset.allocationKey === key));
+    });
+  };
+
+  [...donut.querySelectorAll(".donut-slice"), ...listEl.querySelectorAll(".allocation-item")].forEach((node) => {
+    const key = node.dataset.allocationKey;
+    node.addEventListener("pointerenter", () => highlight(key));
+    node.addEventListener("pointerleave", () => highlight(null));
+    node.addEventListener("focus", () => highlight(key));
+    node.addEventListener("blur", () => highlight(null));
+    node.addEventListener("click", () => toggleAllocationCrossFilter(key));
+    if (node.tagName.toLowerCase() === "path") {
+      node.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        toggleAllocationCrossFilter(key);
+      });
+    }
   });
-
-  donut.style.background = `radial-gradient(circle at center, var(--surface) 0 42%, transparent 43%), conic-gradient(${stops.join(", ")})`;
-  donut.__allocationGroups = groups;
-  document.querySelector(".donut-center strong").innerHTML = `<span class="private-value">${shortMoney(allocationTotal.fundValue)}</span>`;
-  document.querySelector(".allocation-list").innerHTML = groups.map((group) => `
-    <div>
-      <i style="background:${colorForCategory(group.key)}"></i>
-      <span>${group.key}</span>
-      <b>${group.pct.toFixed(1)}%</b>
-    </div>
-  `).join("");
 }
 
 function bindAllocationTooltip() {
-  const donut = document.querySelector(".donut");
-  if (!donut || donut.dataset.tooltipBound) return;
-
-  const tooltip = document.createElement("div");
-  tooltip.className = "donut-tooltip";
-  donut.append(tooltip);
-  donut.dataset.tooltipBound = "true";
-
-  donut.addEventListener("mousemove", (event) => {
-    const groups = donut.__allocationGroups || [];
-    if (groups.length === 0) {
-      tooltip.classList.remove("show");
-      return;
-    }
-
-    const rect = donut.getBoundingClientRect();
-    const x = event.clientX - rect.left;
-    const y = event.clientY - rect.top;
-    const radius = rect.width / 2;
-    const dx = x - radius;
-    const dy = y - radius;
-    const distance = Math.sqrt(dx * dx + dy * dy);
-
-    if (distance < radius * 0.43 || distance > radius) {
-      tooltip.classList.remove("show");
-      return;
-    }
-
-    const angle = (Math.atan2(dy, dx) * 180 / Math.PI + 450) % 360;
-    const pctAtPointer = angle / 3.6;
-    const group = groups.find((item) => pctAtPointer >= item.startPct && pctAtPointer <= item.endPct);
-
-    if (!group) {
-      tooltip.classList.remove("show");
-      return;
-    }
-
-    const detail = state.privacyMode ? `${group.pct.toFixed(1)}%` : `${money(group.amount)} · ${group.pct.toFixed(1)}%`;
-    tooltip.innerHTML = `<b>${group.key}</b><span>${detail}</span>`;
-    tooltip.style.left = `${x}px`;
-    tooltip.style.top = `${y}px`;
-    tooltip.classList.add("show");
-  });
-
-  donut.addEventListener("mouseleave", () => tooltip.classList.remove("show"));
+  // Interactive SVG donut handles hover/focus/click directly in renderAllocation().
 }
 
 function buildCalendarDays(monthKey, snapshots) {
@@ -2710,6 +3163,11 @@ function renderValueCalendar() {
   const weekdays = ["S", "M", "T", "W", "T", "F", "S"];
 
   const cfg = currencyConfig[state.currency];
+  const activityDates = new Set(
+    activities
+      .map((item) => dateKeyFromActivityDate(item.date))
+      .filter((key) => key && key.startsWith(`${state.calendarMonth}-`))
+  );
 
   panel.innerHTML = `
     <div class="calendar-heading">
@@ -2730,12 +3188,15 @@ function renderValueCalendar() {
         : `<span class="calendar-stat-value" style="color:var(--muted);font-size:12px;font-weight:600">No data this month</span>`}
       <span><i class="calendar-dot up"></i>${positiveDays} up</span>
       <span><i class="calendar-dot down"></i>${negativeDays} down</span>
+      ${activityDates.size ? `<span><i class="calendar-dot tx"></i>${activityDates.size} order day${activityDates.size === 1 ? "" : "s"}</span>` : ""}
     </div>
     <div class="value-calendar" aria-label="Investment P&L calendar for ${monthLabel(state.calendarMonth)}">
       ${weekdays.map((day) => `<b class="calendar-weekday">${day}</b>`).join("")}
       ${days.map((day) => {
         if (!day) return `<span class="calendar-day empty"></span>`;
-        if (!day.snapshot) return `<span class="calendar-day muted"><span>${day.day}</span></span>`;
+        const hasActivity = activityDates.has(day.date);
+        const txDot = hasActivity ? `<i class="calendar-tx-dot" title="Orders recorded on ${readableDate(day.date)}" aria-hidden="true"></i>` : "";
+        if (!day.snapshot) return `<span class="calendar-day muted"><span>${day.day}</span>${txDot}</span>`;
 
         const tone = day.delta > 0 ? "up" : day.delta < 0 ? "down" : "flat";
         const heat = tone === "flat" ? "" : ` heat-${Math.min(Math.ceil((Math.abs(day.delta) / maxAbsDelta) * 3), 3)}`;
@@ -2747,11 +3208,11 @@ function renderValueCalendar() {
           : `${deltaSign}${money(Math.abs(day.delta))}`;
         const deltaClass = tone === "up" ? "green" : tone === "down" ? "red" : "";
         const actionDetail = state.privacyMode
-          ? `${readableDate(day.date)} ended ${tone === "up" ? "up" : tone === "down" ? "down" : "flat"} by ${pct(day.deltaPct)}.`
-          : `${readableDate(day.date)} investment P&L ${tone === "up" ? "improved" : tone === "down" ? "fell" : "was flat"} by ${money(Math.abs(day.delta))}, ${pct(day.deltaPct)}. Portfolio value ended at ${money(day.snapshot.totalFundValue)}.`;
+          ? `${readableDate(day.date)} ended ${tone === "up" ? "up" : tone === "down" ? "down" : "flat"} by ${pct(day.deltaPct)}.${hasActivity ? " Has recorded orders." : ""}`
+          : `${readableDate(day.date)} investment P&L ${tone === "up" ? "improved" : tone === "down" ? "fell" : "was flat"} by ${money(Math.abs(day.delta))}, ${pct(day.deltaPct)}. Portfolio value ended at ${money(day.snapshot.totalFundValue)}.${hasActivity ? " Has recorded orders." : ""}`;
         return `
           <button class="calendar-day has-value ${tone}${heat}" type="button" data-calendar-insight="${day.date}" aria-label="${htmlAttr(actionDetail)}">
-            <span>${day.day}</span>
+            <span class="calendar-day-head"><span>${day.day}</span>${txDot}</span>
             <strong class="private-value ${deltaClass}">${deltaStr}</strong>
           </button>
         `;
@@ -2855,7 +3316,7 @@ function renderChannelExposure() {
               </span>
               <span class="bank-pnl-values">
                 <strong><span class="private-value">${money(group.totalValue)}</span><small>${exposurePct.toFixed(1)}% of assets</small></strong>
-                <strong class="${pnlClass}"><span class="private-value">${money(group.pnl)}</span><small>${pct(group.pnlPct)}</small></strong>
+                <strong class="${pnlClass}"><span class="private-value">${signedMoney(group.pnl)}</span><small>${pct(group.pnlPct)}</small></strong>
               </span>
               <span class="bank-exposure-meter" aria-hidden="true">
                 <span class="bank-exposure-track">
@@ -4392,25 +4853,216 @@ function deleteEditingFund() {
 function loadViewPreferences() {
   try {
     const saved = JSON.parse(localStorage.getItem("myFundsPortfolio.views.v1") || "{}");
-    if (["value", "pnl", "daily"].includes(saved.chartMode)) state.chartMode = saved.chartMode;
+    if (["value", "pnl", "return", "daily"].includes(saved.chartMode)) state.chartMode = saved.chartMode;
     if (["overview", "detailed"].includes(saved.holdingsView)) state.holdingsView = saved.holdingsView;
+    if (["category", "tier"].includes(saved.allocationMode)) state.allocationMode = saved.allocationMode;
   } catch { /* An unavailable preference store does not block the portfolio. */ }
 }
 
 function saveViewPreferences() {
   try {
-    localStorage.setItem("myFundsPortfolio.views.v1", JSON.stringify({ chartMode: state.chartMode, holdingsView: state.holdingsView }));
+    localStorage.setItem("myFundsPortfolio.views.v1", JSON.stringify({
+      chartMode: state.chartMode,
+      holdingsView: state.holdingsView,
+      allocationMode: state.allocationMode,
+    }));
   } catch { /* View controls remain usable without browser storage. */ }
 }
 
-function insightActivityMarkup(list) {
+function insightActivityMarkup(list, focusSymbol = "") {
   if (!list.length) return '<p class="insight-empty">No recorded transactions.</p>';
-  return `<ul class="insight-list">${list.map((item) => `<li><div><strong>${htmlAttr(item.type)} · ${htmlAttr(item.asset || item.switch?.fromSymbol || "Cash")}</strong><small>${htmlAttr(item.date)}${item.switch ? ` · ${htmlAttr(item.switch.fromSymbol)} → ${htmlAttr(item.switch.toSymbol)}` : ""}</small></div><span class="private-value">${htmlAttr(activityAmountLabel(item))}</span></li>`).join("")}</ul>`;
+  return `<ul class="insight-list">${list.map((item) => {
+    let title = `${item.type} · ${item.asset || item.switch?.fromSymbol || "Cash"}`;
+    let subtitle = item.date;
+    let badgeTone = item.type.toLowerCase();
+    if (item.type === "Switch" && item.switch) {
+      if (focusSymbol && item.switch.toSymbol === focusSymbol) {
+        title = `Switch in · from ${item.switch.fromSymbol}`;
+        badgeTone = "switch-in";
+      } else if (focusSymbol && item.switch.fromSymbol === focusSymbol) {
+        title = `Switch out · to ${item.switch.toSymbol}`;
+        badgeTone = "switch-out";
+      } else {
+        title = `Switch · ${item.switch.fromSymbol} → ${item.switch.toSymbol}`;
+      }
+      subtitle = `${item.date} · ${item.switch.fromSymbol} → ${item.switch.toSymbol}`;
+    }
+    return `<li><div><strong><span class="insight-tx-dot ${htmlAttr(badgeTone)}" aria-hidden="true"></span>${htmlAttr(title)}</strong><small>${htmlAttr(subtitle)}</small></div><span class="private-value">${htmlAttr(activityAmountLabel(item))}</span></li>`;
+  }).join("")}</ul>`;
+}
+
+function fundMovesOnDate(date) {
+  return holdings
+    .filter((holding) => !isCashHolding(holding))
+    .map((holding) => {
+      const entry = normalizeNavHistory(holding).find((item) => item.date === date);
+      if (!entry || !Number.isFinite(Number(entry.pct)) || Math.abs(Number(entry.pct)) < 0.005) return null;
+      return {
+        symbol: holding.symbol,
+        name: holding.name,
+        category: holding.category,
+        pct: Number(entry.pct),
+        nav: Number(entry.nav) || 0,
+        archived: isArchivedFund(holding),
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => Math.abs(right.pct) - Math.abs(left.pct));
+}
+
+function fundInsightChartMarkup(fund, historyAsc, transactions) {
+  const navPoints = historyAsc.filter((entry) => Number(entry.nav) > 0);
+  if (navPoints.length < 2) return "";
+
+  const width = 560;
+  const height = 204;
+  const left = 56;
+  const right = 18;
+  const top = 16;
+  const bottom = 32;
+  const plotW = width - left - right;
+  const plotH = height - top - bottom;
+
+  const startMs = parseDateKey(navPoints[0].date).getTime();
+  const endMs = Math.max(parseDateKey(navPoints.at(-1).date).getTime(), startMs + 86400000);
+  const buyingNav = Number(fund.buyingNav) > 0 ? Number(fund.buyingNav) : 0;
+  const navValues = navPoints.map((entry) => Number(entry.nav));
+  const rawMin = buyingNav > 0 ? Math.min(...navValues, buyingNav) : Math.min(...navValues);
+  const rawMax = buyingNav > 0 ? Math.max(...navValues, buyingNav) : Math.max(...navValues);
+  const pad = Math.max((rawMax - rawMin) * 0.12, rawMax * 0.01, 0.01);
+  const ticks = computeNiceTicks(Math.max(0, rawMin - pad), rawMax + pad, 4);
+  const min = ticks.at(-1);
+  const max = ticks[0];
+  const span = Math.max(max - min, 0.0001);
+
+  const x = (date) => left + ((parseDateKey(date).getTime() - startMs) / (endMs - startMs)) * plotW;
+  const y = (value) => top + plotH - ((value - min) / span) * plotH;
+
+  const coords = navPoints.map((entry) => ({
+    ...entry,
+    px: x(entry.date),
+    py: y(Number(entry.nav)),
+  }));
+  const linePath = coords.map((pt, idx) => `${idx === 0 ? "M" : "L"}${pt.px.toFixed(1)},${pt.py.toFixed(1)}`).join(" ");
+  const floorY = (top + plotH).toFixed(1);
+  const areaPath = `${linePath} L${coords.at(-1).px.toFixed(1)},${floorY} L${coords[0].px.toFixed(1)},${floorY} Z`;
+
+  const lastNav = Number(navPoints.at(-1).nav);
+  const tone = buyingNav > 0 ? (lastNav >= buyingNav ? "profit" : "loss") : "value";
+
+  // Map transactions to the closest recorded NAV point within the chart window.
+  const txByDate = new Map();
+  const usedKinds = new Set();
+  transactions.forEach((item) => {
+    const key = dateKeyFromActivityDate(item.date);
+    if (!key || key < navPoints[0].date || key > navPoints.at(-1).date) return;
+    let kind = "buy";
+    let label = item.type;
+    if (item.type === "Switch" && item.switch) {
+      kind = item.switch.toSymbol === fund.symbol ? "switch-in" : "switch-out";
+      label = kind === "switch-in" ? `Switch in (${item.switch.fromSymbol})` : `Switch out (${item.switch.toSymbol})`;
+    } else if (item.type === "Sell") {
+      kind = "sell";
+    } else if (item.type === "Dividend") {
+      kind = "dividend";
+    }
+    usedKinds.add(kind);
+    const list = txByDate.get(key) || [];
+    list.push({ kind, label, amount: activityAmountLabel(item) });
+    txByDate.set(key, list);
+  });
+
+  const dateTickIndices = navPoints.length <= 3
+    ? navPoints.map((_, idx) => idx)
+    : [0, Math.floor((navPoints.length - 1) / 2), navPoints.length - 1];
+  const gridSvg = ticks.map((tick) => {
+    const ty = y(tick).toFixed(1);
+    const label = tick >= 100 ? tick.toFixed(1) : tick >= 10 ? tick.toFixed(2) : tick.toFixed(3);
+    return `<line class="chart-grid" x1="${left}" y1="${ty}" x2="${left + plotW}" y2="${ty}"/><text class="chart-axis" x="${left - 8}" y="${Number(ty) + 3.5}" text-anchor="end">${label}</text>`;
+  }).join("");
+  const xLabelsSvg = [...new Set(dateTickIndices)].map((idx) => {
+    const pt = coords[idx];
+    const anchor = idx === 0 ? "start" : idx === navPoints.length - 1 ? "end" : "middle";
+    const dateLabel = parseDateKey(pt.date).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    return `<text class="chart-axis" x="${pt.px.toFixed(1)}" y="${top + plotH + 20}" text-anchor="${anchor}">${dateLabel}</text>`;
+  }).join("");
+
+  const buyLineY = buyingNav > 0 ? y(buyingNav) : null;
+  const buyLineSvg = buyLineY !== null && buyLineY >= top && buyLineY <= top + plotH
+    ? `<line class="fund-buy-line" x1="${left}" y1="${buyLineY.toFixed(1)}" x2="${left + plotW}" y2="${buyLineY.toFixed(1)}"/><rect class="fund-buy-pill" x="${left + plotW - 92}" y="${Math.max(top, buyLineY - 17).toFixed(1)}" width="90" height="15" rx="4"/><text class="fund-buy-label" x="${left + plotW - 47}" y="${Math.max(top + 10.5, buyLineY - 6.5).toFixed(1)}" text-anchor="middle">Buy ${nav(buyingNav)}</text>`
+    : "";
+
+  const markersSvg = coords.map((pt, idx) => {
+    const txs = txByDate.get(pt.date) || [];
+    const primaryTx = txs[0];
+    const txSummary = txs.map((tx) => `${tx.label}: ${state.privacyMode ? "••••" : tx.amount}`).join(" | ");
+    const txDot = primaryTx
+      ? `<circle class="fund-tx-marker ${primaryTx.kind}" cx="${pt.px.toFixed(1)}" cy="${pt.py.toFixed(1)}" r="4.5"/>`
+      : idx === coords.length - 1
+      ? `<circle class="fund-end-dot ${tone}" cx="${pt.px.toFixed(1)}" cy="${pt.py.toFixed(1)}" r="3.5"/>`
+      : "";
+    return `<g class="fund-chart-hit-group" data-fund-point data-date="${pt.date}" data-nav="${Number(pt.nav).toFixed(4)}" data-pct="${Number(pt.pct || 0).toFixed(2)}" data-tx="${htmlAttr(txSummary)}" tabindex="${idx === coords.length - 1 ? 0 : -1}"><circle class="chart-point-hit" cx="${pt.px.toFixed(1)}" cy="${pt.py.toFixed(1)}" r="10"/><circle class="fund-hover-dot ${tone}" cx="${pt.px.toFixed(1)}" cy="${pt.py.toFixed(1)}" r="3.5"/>${txDot}</g>`;
+  }).join("");
+
+  const legendItems = [
+    `<span><i class="fund-legend-line ${tone}"></i>NAV (${htmlAttr(fund.navCurrency || "THB")})</span>`,
+    buyingNav > 0 ? `<span><i class="fund-legend-dash"></i>Avg Buy NAV</span>` : "",
+    usedKinds.has("buy") ? `<span><i class="fund-legend-dot buy"></i>Buy</span>` : "",
+    usedKinds.has("switch-in") ? `<span><i class="fund-legend-dot switch-in"></i>Switch in</span>` : "",
+    usedKinds.has("sell") || usedKinds.has("switch-out") ? `<span><i class="fund-legend-dot sell"></i>Sell / Switch out</span>` : "",
+  ].filter(Boolean).join("");
+
+  return `
+    <div class="fund-chart-box">
+      <svg class="fund-insight-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${htmlAttr(fund.symbol)} NAV history chart">
+        ${gridSvg}${xLabelsSvg}
+        <path class="fund-area ${tone}" d="${areaPath}"/>
+        <path class="fund-line ${tone}" d="${linePath}"/>
+        ${buyLineSvg}
+        ${markersSvg}
+      </svg>
+      <div class="fund-chart-tooltip" hidden></div>
+      <div class="fund-chart-legend">${legendItems}</div>
+    </div>`;
+}
+
+function bindFundInsightChartTooltip(container) {
+  const box = container?.querySelector(".fund-chart-box");
+  const tooltip = box?.querySelector(".fund-chart-tooltip");
+  if (!box || !tooltip) return;
+  const targets = [...box.querySelectorAll("[data-fund-point]")];
+  const hide = () => { tooltip.hidden = true; };
+  const show = (target) => {
+    const pctNum = Number(target.dataset.pct);
+    const pctTone = pctNum > 0.005 ? "green" : pctNum < -0.005 ? "red" : "neutral";
+    const txLines = target.dataset.tx
+      ? target.dataset.tx.split(" | ").map((line) => `<small class="fund-tooltip-tx">${htmlAttr(line)}</small>`).join("")
+      : "";
+    tooltip.innerHTML = `<strong>${htmlAttr(readableDate(target.dataset.date))}</strong><div><span>NAV</span><b>${htmlAttr(target.dataset.nav)}</b></div><div><span>Daily</span><b class="${pctTone}">${pct(pctNum)}</b></div>${txLines}`;
+    tooltip.hidden = false;
+    const boxRect = box.getBoundingClientRect();
+    const targetRect = target.getBoundingClientRect();
+    const leftPx = Math.max(8, Math.min(targetRect.left - boxRect.left + targetRect.width / 2 + 10, boxRect.width - tooltip.offsetWidth - 8));
+    const topPx = Math.max(6, Math.min(targetRect.top - boxRect.top - tooltip.offsetHeight - 8, boxRect.height - tooltip.offsetHeight - 8));
+    tooltip.style.left = `${leftPx}px`;
+    tooltip.style.top = `${topPx}px`;
+  };
+  targets.forEach((target) => {
+    target.addEventListener("pointerenter", () => show(target));
+    target.addEventListener("pointerleave", hide);
+    target.addEventListener("focus", () => show(target));
+    target.addEventListener("blur", hide);
+  });
 }
 
 function showInsight(title, content) {
   document.querySelector("#insightTitle").textContent = title;
-  document.querySelector("#insightContent").innerHTML = content;
+  const container = document.querySelector("#insightContent");
+  container.innerHTML = content;
+  bindFundInsightChartTooltip(container);
+  container.querySelectorAll("[data-fund-insight]").forEach((button) => {
+    button.addEventListener("click", () => openFundInsight(button.dataset.fundInsight));
+  });
   document.querySelector("#insightDialog").showModal();
 }
 
@@ -4418,13 +5070,35 @@ function openFundInsight(symbol) {
   const raw = holdings.find((fund) => fund.symbol === symbol);
   if (!raw) return;
   const fund = deriveFund(raw);
-  const history = normalizeNavHistory(raw).filter((entry) => entry.date <= activeDateKey()).reverse();
+  const allTotal = totals().fundValue;
+  const weightPct = allTotal > 0 ? (fund.currentValue / allTotal) * 100 : 0;
+  const historyAsc = normalizeNavHistory(raw).filter((entry) => entry.date <= activeDateKey());
+  const history = [...historyAsc].reverse();
   const transactions = sortedActivities().filter((item) => item.asset === symbol || item.switch?.fromSymbol === symbol || item.switch?.toSymbol === symbol);
-  showInsight(symbol, `<p class="insight-description">${htmlAttr(fund.name)} · ${htmlAttr(fund.bank)}<br>Valued using the log date ${readableDate(activeDateKey())}.</p>
-    <dl class="insight-metrics"><div><dt>Current value</dt><dd class="private-value">${money(fund.currentValue)}</dd></div><div><dt>Unrealized P&L</dt><dd class="${fund.pnlBaht < 0 ? "red" : "green"}"><span class="private-value">${signedMoney(fund.pnlBaht)}</span> <small>${pct(fund.pnlPct)}</small></dd></div></dl>
-    <h3>Recorded NAV history</h3>
-    ${history.length ? `<ul class="insight-list">${history.map((entry) => `<li><span>${readableDate(entry.date)}</span><strong><span class="private-value">${entry.nav ? nav(entry.nav) : "NAV not recorded"}</span> <small>${pct(entry.pct)}</small></strong></li>`).join("")}</ul>` : '<p class="insight-empty">No NAV history recorded for this fund.</p>'}
-    <h3>Transaction history · all dates</h3>${insightActivityMarkup(transactions)}`);
+
+  // Peak-to-current drawdown from recorded NAV history
+  const navEntries = historyAsc.filter((entry) => Number(entry.nav) > 0);
+  const peakNav = navEntries.length ? Math.max(...navEntries.map((entry) => Number(entry.nav))) : 0;
+  const fromPeakPct = peakNav > 0 && fund.currentNav > 0 ? ((fund.currentNav / peakNav) - 1) * 100 : 0;
+  const isForeign = fund.navCurrency && fund.navCurrency !== "THB";
+  const fxSub = isForeign
+    ? `<small>FX ${nav(fund.buyFxRate)} → ${nav(fund.fxRate)} THB/${htmlAttr(fund.navCurrency)}</small>`
+    : peakNav > 0 && fromPeakPct < -0.5
+    ? `<small>${signedPctText(fromPeakPct)} from peak (${nav(peakNav)})</small>`
+    : `<small>${htmlAttr(fund.category)}</small>`;
+
+  showInsight(symbol, `<p class="insight-description">${htmlAttr(fund.name)} · ${htmlAttr(fund.bank)} (${htmlAttr(fund.port)})<br>Valued using the log date ${readableDate(activeDateKey())}.</p>
+    <dl class="insight-metrics insight-metrics-4">
+      <div><dt>Current value</dt><dd><span class="private-value">${money(fund.currentValue)}</span><small>${weightPct.toFixed(1)}% of portfolio</small></dd></div>
+      <div><dt>Unrealized P&L</dt><dd class="${fund.pnlBaht < 0 ? "red" : fund.pnlBaht > 0 ? "green" : "neutral"}"><span class="private-value">${signedMoney(fund.pnlBaht)}</span><small>${pct(fund.pnlPct)}</small></dd></div>
+      <div><dt>Avg Buy → Current NAV</dt><dd>${nav(fund.buyingNav)} → ${nav(fund.currentNav)}${fxSub}</dd></div>
+      <div><dt>Invested cost</dt><dd><span class="private-value">${money(fund.purchaseAmount)}</span><small class="private-value">${fund.units.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} units</small></dd></div>
+    </dl>
+    ${fundInsightChartMarkup(fund, historyAsc, transactions)}
+    <h3>Transaction history · ${transactions.length} record${transactions.length === 1 ? "" : "s"}</h3>${insightActivityMarkup(transactions, symbol)}
+    <details class="insight-history-details"><summary>Recorded NAV history (${history.length} day${history.length === 1 ? "" : "s"})</summary>
+    ${history.length ? `<ul class="insight-list">${history.map((entry) => `<li><span>${readableDate(entry.date)}</span><strong><span class="private-value">${entry.nav ? nav(entry.nav) : "NAV not recorded"}</span> <small class="${entry.pct > 0.005 ? "green" : entry.pct < -0.005 ? "red" : ""}">${pct(entry.pct)}</small></strong></li>`).join("")}</ul>` : '<p class="insight-empty">No NAV history recorded for this fund.</p>'}
+    </details>`);
 }
 
 function openCalendarInsight(date) {
@@ -4435,9 +5109,308 @@ function openCalendarInsight(date) {
     const parsed = new Date(item.date);
     return !Number.isNaN(parsed.getTime()) && dateKeyFromDate(parsed) === date;
   });
-  showInsight(readableDate(date), `<dl class="insight-metrics"><div><dt>Portfolio value</dt><dd class="private-value">${money(snapshot.totalFundValue)}</dd></div><div><dt>${chartLabels().pnl}</dt><dd class="private-value">${signedMoney(snapshot.pnl)}</dd></div><div><dt>Recorded daily P&L</dt><dd class="${daily === null ? "" : "private-value"}">${daily === null ? "Not recorded" : signedMoney(daily)}</dd></div><div><dt>${chartLabels().cost}</dt><dd class="private-value">${money(snapshot.totalPaid)}</dd></div></dl>
+  const movers = fundMovesOnDate(date);
+  const maxMove = movers.length ? Math.max(...movers.map((item) => Math.abs(item.pct)), 0.01) : 1;
+  const moversMarkup = movers.length
+    ? `<ul class="insight-movers">${movers.slice(0, 8).map((item) => {
+        const tone = item.pct > 0 ? "green" : "red";
+        const barW = Math.max(4, (Math.abs(item.pct) / maxMove) * 100).toFixed(1);
+        return `<li><button type="button" class="insight-mover-btn" data-fund-insight="${htmlAttr(item.symbol)}"><span class="insight-mover-name"><strong>${htmlAttr(item.symbol)}</strong><small>${htmlAttr(item.category)}${item.archived ? " · Closed" : ""}</small></span><span class="insight-mover-bar" aria-hidden="true"><i class="${tone}" style="width:${barW}%"></i></span><b class="${tone}">${pct(item.pct)}</b></button></li>`;
+      }).join("")}</ul>`
+    : '<p class="insight-empty">No individual fund NAV moves recorded on this date.</p>';
+
+  const pnlTone = snapshot.pnl > 0.005 ? "green" : snapshot.pnl < -0.005 ? "red" : "neutral";
+  const dailyTone = daily === null ? "" : daily > 0.005 ? "green" : daily < -0.005 ? "red" : "neutral";
+  showInsight(readableDate(date), `<dl class="insight-metrics"><div><dt>Portfolio value</dt><dd class="private-value">${money(snapshot.totalFundValue)}</dd></div><div><dt>${chartLabels().pnl}</dt><dd class="private-value ${pnlTone}">${signedMoney(snapshot.pnl)}</dd></div><div><dt>Recorded daily P&L</dt><dd class="${daily === null ? "" : `private-value ${dailyTone}`}">${daily === null ? "Not recorded" : signedMoney(daily)}</dd></div><div><dt>${chartLabels().cost}</dt><dd class="private-value">${money(snapshot.totalPaid)}</dd></div></dl>
+    <h3>Top fund NAV moves on this date</h3>${moversMarkup}
     <h3>Transactions on this date</h3>${insightActivityMarkup(transactions)}
-    <p class="insight-description">Historical fund-level P&L contributions are not stored in this portfolio snapshot.</p>`);
+    <p class="insight-description">Percentages show each fund's recorded NAV change on ${readableDate(date)}. Exact per-fund baht contributions are not stored in historical snapshots.</p>`);
+}
+
+const navUpdaterState = {
+  filterStatus: "all",
+  filterBank: "",
+  drafts: new Map(),
+};
+
+function navUpdaterItems() {
+  const active = activeFundHoldings();
+  const held = active.filter((item) => Number(item.units || 0) > 0.00005);
+  const source = held.length ? held : active;
+  return source
+    .map((raw) => {
+      const navDate = navEffectiveDate(raw);
+      const history = normalizeNavHistory(raw);
+      const entry = history.find((item) => item.date === navDate);
+      const hasEntry = Boolean(entry && (Number(entry.nav) > 0 || Math.abs(Number(entry.pct)) >= 0.005));
+      const previousNav = navBeforeDate(raw, navDate);
+      const derived = deriveFund(raw);
+      const currentNav = entry && Number(entry.nav) > 0 ? Number(entry.nav) : Number(derived.currentNav || 0);
+      const currentPct = entry && Number.isFinite(Number(entry.pct)) ? Number(entry.pct) : 0;
+      return {
+        symbol: raw.symbol,
+        name: raw.name,
+        bank: raw.bank,
+        port: raw.port,
+        category: raw.category,
+        navCurrency: fundNavCurrency(raw),
+        navLagDays: normalizedNavLagDays(raw),
+        navDate,
+        hasEntry,
+        previousNav,
+        currentNav,
+        currentPct,
+      };
+    })
+    .sort((left, right) => left.bank.localeCompare(right.bank) || left.symbol.localeCompare(right.symbol));
+}
+
+function updateNavUpdaterFooter() {
+  const dirtyLabel = document.querySelector("#navUpdaterDirty");
+  const saveButton = document.querySelector("#navUpdaterSave");
+  const count = navUpdaterState.drafts.size;
+  if (dirtyLabel) {
+    dirtyLabel.textContent = count > 0
+      ? `${count} fund${count === 1 ? "" : "s"} modified`
+      : "No unsaved changes";
+    dirtyLabel.classList.toggle("has-dirty", count > 0);
+  }
+  if (saveButton) {
+    saveButton.disabled = count === 0;
+    saveButton.textContent = count > 0 ? `Save ${count} update${count === 1 ? "" : "s"}` : "Save updates";
+  }
+}
+
+function renderNavUpdaterDialog() {
+  const items = navUpdaterItems();
+  const dateLabel = readableDate(activeDateKey());
+  const subtitle = document.querySelector("#navUpdaterSubtitle");
+  const progress = document.querySelector("#navUpdaterProgress");
+  const controls = document.querySelector("#navUpdaterControls");
+  const list = document.querySelector("#navUpdaterList");
+  if (!subtitle || !progress || !controls || !list) return;
+
+  const updatedCount = items.filter((item) => item.hasEntry || navUpdaterState.drafts.has(item.symbol)).length;
+  const pendingCount = items.length - updatedCount;
+  const pctDone = items.length > 0 ? Math.round((updatedCount / items.length) * 100) : 0;
+
+  subtitle.textContent = `Log date ${dateLabel} · Enter either Current NAV or Daily % and the other updates automatically.`;
+  progress.innerHTML = `
+    <span class="nav-progress-label"><strong>${updatedCount} / ${items.length}</strong> updated</span>
+    <span class="nav-progress-track" aria-hidden="true"><i style="width:${pctDone}%"></i></span>
+  `;
+
+  const banks = uniqueSorted(items.map((item) => item.bank));
+  if (navUpdaterState.filterBank && !banks.includes(navUpdaterState.filterBank)) navUpdaterState.filterBank = "";
+
+  controls.innerHTML = `
+    <div class="nav-filter-group" role="group" aria-label="Filter by update status">
+      <button type="button" data-nav-status="all" aria-pressed="${navUpdaterState.filterStatus === "all"}">All (${items.length})</button>
+      <button type="button" data-nav-status="pending" aria-pressed="${navUpdaterState.filterStatus === "pending"}">Pending (${pendingCount})</button>
+    </div>
+    <div class="nav-filter-group nav-bank-chips" role="group" aria-label="Filter by bank">
+      <button type="button" data-nav-bank="" aria-pressed="${navUpdaterState.filterBank === ""}">All banks</button>
+      ${banks.map((bank) => `<button type="button" data-nav-bank="${htmlAttr(bank)}" aria-pressed="${navUpdaterState.filterBank === bank}">${htmlAttr(bank)}</button>`).join("")}
+    </div>
+  `;
+
+  controls.querySelectorAll("[data-nav-status]").forEach((button) => {
+    button.addEventListener("click", () => {
+      navUpdaterState.filterStatus = button.dataset.navStatus;
+      renderNavUpdaterDialog();
+    });
+  });
+  controls.querySelectorAll("[data-nav-bank]").forEach((button) => {
+    button.addEventListener("click", () => {
+      navUpdaterState.filterBank = button.dataset.navBank;
+      renderNavUpdaterDialog();
+    });
+  });
+
+  const visible = items.filter((item) => {
+    if (navUpdaterState.filterBank && item.bank !== navUpdaterState.filterBank) return false;
+    if (navUpdaterState.filterStatus === "pending" && (item.hasEntry || navUpdaterState.drafts.has(item.symbol))) return false;
+    return true;
+  });
+
+  if (visible.length === 0) {
+    list.innerHTML = `<div class="empty-panel-state compact"><strong>${items.length === 0 ? "No active funds" : "All funds in this view are updated"}</strong><span>${items.length === 0 ? "Add a fund first to log daily NAVs." : "Switch to All to review or adjust recorded values."}</span></div>`;
+    updateNavUpdaterFooter();
+    return;
+  }
+
+  list.innerHTML = `
+    <div class="nav-updater-header-row" aria-hidden="true">
+      <span>Fund</span>
+      <span class="num">Prev NAV</span>
+      <span class="num">Current NAV</span>
+      <span class="num">Daily %</span>
+    </div>
+    ${visible.map((item) => {
+      const draft = navUpdaterState.drafts.get(item.symbol);
+      const displayNav = draft ? draft.nav : item.currentNav;
+      const displayPct = draft ? draft.pct : item.currentPct;
+      const isDirty = Boolean(draft);
+      const statusClass = isDirty ? "dirty" : item.hasEntry ? "done" : "pending";
+      const statusText = isDirty ? "Edited" : item.hasEntry ? "Updated" : "Pending";
+      const lagBadge = item.navLagDays > 0 ? `<small class="nav-lag-badge">T−${item.navLagDays}</small>` : "";
+      const ccyBadge = item.navCurrency !== "THB" ? `<small class="nav-lag-badge">${htmlAttr(item.navCurrency)}</small>` : "";
+      const pctTone = displayPct > 0.005 ? "green" : displayPct < -0.005 ? "red" : "";
+      return `
+        <div class="nav-updater-row${isDirty ? " is-dirty" : ""}" data-nav-row="${htmlAttr(item.symbol)}">
+          <div class="nav-row-fund">
+            <div class="nav-row-title">
+              <strong>${htmlAttr(item.symbol)}</strong>
+              <span class="nav-status-pill ${statusClass}">${statusText}</span>
+              ${lagBadge}${ccyBadge}
+            </div>
+            <small>${htmlAttr(item.bank)} · ${htmlAttr(item.category)}</small>
+          </div>
+          <div class="nav-row-prev num">${item.previousNav > 0 ? nav(item.previousNav) : "—"}</div>
+          <label class="nav-row-input">
+            <span class="nav-input-label">Current NAV</span>
+            <input type="number" step="0.0001" min="0" inputmode="decimal" data-nav-input="${htmlAttr(item.symbol)}" value="${displayNav > 0 ? displayNav.toFixed(4) : ""}" placeholder="0.0000" aria-label="${htmlAttr(item.symbol)} current NAV" />
+          </label>
+          <label class="nav-row-input nav-row-pct">
+            <span class="nav-input-label">Daily %</span>
+            <span class="nav-pct-field">
+              <input type="number" step="0.01" inputmode="decimal" class="${pctTone}" data-pct-input="${htmlAttr(item.symbol)}" value="${Number.isFinite(displayPct) ? displayPct.toFixed(2) : "0.00"}" placeholder="0.00" aria-label="${htmlAttr(item.symbol)} daily percent change" />
+              <span aria-hidden="true">%</span>
+            </span>
+          </label>
+        </div>
+      `;
+    }).join("")}
+  `;
+
+  const bySymbol = new Map(items.map((item) => [item.symbol, item]));
+
+  const syncRowVisual = (row, symbol, nextPct) => {
+    const isDirty = navUpdaterState.drafts.has(symbol);
+    row.classList.toggle("is-dirty", isDirty);
+    const pill = row.querySelector(".nav-status-pill");
+    const item = bySymbol.get(symbol);
+    if (pill && item) {
+      pill.className = `nav-status-pill ${isDirty ? "dirty" : item.hasEntry ? "done" : "pending"}`;
+      pill.textContent = isDirty ? "Edited" : item.hasEntry ? "Updated" : "Pending";
+    }
+    const pctInput = row.querySelector("[data-pct-input]");
+    if (pctInput) {
+      pctInput.classList.toggle("green", nextPct > 0.005);
+      pctInput.classList.toggle("red", nextPct < -0.005);
+    }
+    const nextUpdated = items.filter((entry) => entry.hasEntry || navUpdaterState.drafts.has(entry.symbol)).length;
+    const nextPctDone = items.length > 0 ? Math.round((nextUpdated / items.length) * 100) : 0;
+    const label = progress.querySelector(".nav-progress-label strong");
+    const bar = progress.querySelector(".nav-progress-track i");
+    if (label) label.textContent = `${nextUpdated} / ${items.length}`;
+    if (bar) bar.style.width = `${nextPctDone}%`;
+    updateNavUpdaterFooter();
+  };
+
+  const focusNextInput = (selector, currentInput) => {
+    const inputs = [...list.querySelectorAll(selector)];
+    const idx = inputs.indexOf(currentInput);
+    if (idx >= 0 && idx + 1 < inputs.length) {
+      inputs[idx + 1].focus();
+      inputs[idx + 1].select();
+    }
+  };
+
+  list.querySelectorAll("[data-nav-input]").forEach((input) => {
+    input.addEventListener("input", () => {
+      const symbol = input.dataset.navInput;
+      const item = bySymbol.get(symbol);
+      const row = input.closest(".nav-updater-row");
+      if (input.value.trim() === "") return;
+      const value = Number(input.value);
+      if (!item || !row || !Number.isFinite(value) || value <= 0) return;
+      const impliedPct = item.previousNav > 0 ? ((value / item.previousNav) - 1) * 100 : 0;
+      const pctInput = row.querySelector("[data-pct-input]");
+      if (pctInput) pctInput.value = impliedPct.toFixed(2);
+      if (Math.abs(value - item.currentNav) < 0.00005 && item.hasEntry) {
+        navUpdaterState.drafts.delete(symbol);
+      } else {
+        navUpdaterState.drafts.set(symbol, { nav: value, pct: impliedPct, navDate: item.navDate, previousNav: item.previousNav });
+      }
+      syncRowVisual(row, symbol, impliedPct);
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        focusNextInput("[data-nav-input]", input);
+      }
+    });
+  });
+
+  list.querySelectorAll("[data-pct-input]").forEach((input) => {
+    input.addEventListener("input", () => {
+      const symbol = input.dataset.pctInput;
+      const item = bySymbol.get(symbol);
+      const row = input.closest(".nav-updater-row");
+      // Ignore an empty or half-typed value ("", "-"); number inputs report both as "".
+      if (input.value.trim() === "") return;
+      const value = Number(input.value);
+      if (!item || !row || !Number.isFinite(value)) return;
+      const impliedNav = item.previousNav > 0 ? item.previousNav * (1 + value / 100) : item.currentNav;
+      const navInput = row.querySelector("[data-nav-input]");
+      if (navInput && impliedNav > 0) navInput.value = impliedNav.toFixed(4);
+      if (Math.abs(value - item.currentPct) < 0.005 && item.hasEntry) {
+        navUpdaterState.drafts.delete(symbol);
+      } else {
+        navUpdaterState.drafts.set(symbol, { nav: impliedNav, pct: value, navDate: item.navDate, previousNav: item.previousNav });
+      }
+      syncRowVisual(row, symbol, value);
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        focusNextInput("[data-pct-input]", input);
+      }
+    });
+  });
+
+  updateNavUpdaterFooter();
+}
+
+function openNavUpdaterDialog() {
+  navUpdaterState.drafts.clear();
+  navUpdaterState.filterStatus = "all";
+  navUpdaterState.filterBank = "";
+  renderNavUpdaterDialog();
+  document.querySelector("#navUpdaterDialog")?.showModal();
+}
+
+function saveNavUpdaterChanges() {
+  if (navUpdaterState.drafts.size === 0) return;
+  const undoPoint = portfolioUndoPoint();
+  let updated = 0;
+
+  navUpdaterState.drafts.forEach((draft, symbol) => {
+    const fund = holdings.find((item) => item.symbol === symbol);
+    if (!fund) return;
+    const previousNav = navBeforeDate(fund, draft.navDate);
+    if (previousNav <= 0 && draft.nav > 0) {
+      fund.baseNav = draft.nav;
+      fund.currentNav = draft.nav;
+      fund.navHistory = upsertNavHistory(fund, draft.navDate, 0, draft.nav);
+      fund.dailyChangePct = 0;
+    } else {
+      fund.navHistory = upsertNavHistory(fund, draft.navDate, draft.pct, draft.nav);
+      fund.dailyChangePct = draft.pct;
+    }
+    updated += 1;
+  });
+
+  navUpdaterState.drafts.clear();
+  document.querySelector("#navUpdaterDialog")?.close();
+  savePortfolio();
+  renderAll();
+  showUndoToast(
+    `Updated NAV for ${updated} fund${updated === 1 ? "" : "s"} (${readableDate(activeDateKey())}).`,
+    undoPoint,
+    "Daily NAV batch update undone.",
+  );
 }
 
 function bindDynamicButtons() {
@@ -4448,10 +5421,13 @@ function bindDynamicButtons() {
       if (button.dataset.fundInsight) openFundInsight(button.dataset.fundInsight);
       else if (button.dataset.calendarInsight) openCalendarInsight(button.dataset.calendarInsight);
       else {
+        state.holdingsScope = "active";
         state.tableSearch = "";
         state.tableCategory = "";
+        state.tableRiskTier = "";
         state.tableBank = button.dataset.bankInsight;
         renderHoldings();
+        renderAllocation();
         document.querySelector("#holdingBankFilter").focus({ preventScroll: true });
         document.querySelector(".holdings-panel").scrollIntoView({ behavior: "smooth", block: "start" });
       }
@@ -4481,11 +5457,32 @@ function bindInteractions() {
     saveViewPreferences();
     renderChart(document.querySelector(".range-tabs .active")?.dataset.range || "1W");
   }));
+  document.querySelectorAll("[data-allocation-mode]").forEach((button) => button.addEventListener("click", () => {
+    state.allocationMode = button.dataset.allocationMode;
+    saveViewPreferences();
+    renderAllocation();
+  }));
   document.querySelectorAll("[data-holdings-view]").forEach((button) => button.addEventListener("click", () => {
     state.holdingsView = button.dataset.holdingsView;
     saveViewPreferences();
     renderHoldings();
   }));
+  document.querySelectorAll("[data-holdings-scope]").forEach((button) => button.addEventListener("click", () => {
+    state.holdingsScope = button.dataset.holdingsScope;
+    renderHoldings();
+  }));
+  document.querySelector("#updateNavsButton")?.addEventListener("click", openNavUpdaterDialog);
+  document.querySelector("#navUpdaterClose")?.addEventListener("click", () => document.querySelector("#navUpdaterDialog")?.close());
+  document.querySelector("#navUpdaterCancel")?.addEventListener("click", () => document.querySelector("#navUpdaterDialog")?.close());
+  document.querySelector("#navUpdaterSave")?.addEventListener("click", saveNavUpdaterChanges);
+  document.querySelector("#navUpdaterDialog")?.addEventListener("close", () => {
+    if (cloudState.stale) {
+      cloudState.stale = false;
+      loadPortfolio();
+      applyPrivacyMode();
+      renderAll();
+    }
+  });
   document.querySelector("#pnlToggle").addEventListener("click", () => {
     state.pnlShowAll = !state.pnlShowAll;
     renderBreakdown();
@@ -4546,19 +5543,35 @@ function bindInteractions() {
   document.querySelector("#holdingBankFilter")?.addEventListener("change", (event) => {
     state.tableBank = event.target.value;
     renderHoldings();
+    renderAllocation();
   });
 
   document.querySelector("#holdingCategoryFilter")?.addEventListener("change", (event) => {
     state.tableCategory = event.target.value;
     renderHoldings();
+    renderAllocation();
   });
 
   document.querySelector("#holdingFilterReset")?.addEventListener("click", () => {
     state.tableSearch = "";
     state.tableBank = "";
     state.tableCategory = "";
+    state.tableRiskTier = "";
     renderHoldings();
+    renderAllocation();
     showToast("Table filters reset.");
+  });
+
+  document.querySelector("#activitySearchInput")?.addEventListener("input", (event) => {
+    state.activitySearch = event.target.value;
+    renderActivities();
+  });
+
+  document.querySelectorAll("[data-activity-type]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.activityType = button.dataset.activityType;
+      renderActivities();
+    });
   });
 
   document.querySelector("#allocationBankFilter")?.addEventListener("change", (event) => {

@@ -15,6 +15,9 @@
   --orange: #ff9515;
   --red: #f23b3b;
   --cyan: #2fa9bd;
+  --amber: #d97706;
+  --amber-soft: #fef3c7;
+  --amber-text: #b45309;
   --shadow: 0 14px 35px rgba(21, 35, 72, 0.07);
   --shadow-soft: 0 8px 20px rgba(28, 38, 67, 0.05);
   --radius: 10px;
@@ -1421,7 +1424,7 @@ button:active {
 
 table {
   width: 100%;
-  min-width: 1520px;
+  min-width: 1120px;
   border-collapse: collapse;
   color: #26314d;
   font-size: 12px;
@@ -2285,6 +2288,16 @@ th[data-col].sort-desc::after {
   font-size: 13px;
 }
 
+.bank-pnl-values strong.green,
+.bank-pnl-values strong.green small {
+  color: var(--green);
+}
+
+.bank-pnl-values strong.red,
+.bank-pnl-values strong.red small {
+  color: var(--red);
+}
+
 .bank-exposure-meter {
   display: grid;
   gap: 6px;
@@ -2308,7 +2321,7 @@ th[data-col].sort-desc::after {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, #43a65f, var(--green));
+  background: var(--blue);
 }
 
 .bank-port-section {
@@ -4174,6 +4187,10 @@ body.v2 {
   margin: 0;
 }
 
+.v2 .holding-filter-count[hidden] {
+  display: none;
+}
+
 .v2 .holding-filter-count {
   padding: 2px 8px;
   border-radius: 999px;
@@ -4222,12 +4239,28 @@ body.v2 {
 
 .v2 .filter-search input,
 .v2 .filter-select select {
+  height: 38px;
   min-height: 38px;
   border: 1px solid var(--line);
   border-radius: 10px;
   background-color: var(--surface-soft);
-  font-size: 14px;
-  font-weight: 400;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 36px;
+}
+
+.v2 .filter-select select {
+  padding: 0 28px 0 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.v2 .holding-mobile-sort select {
+  padding: 0 8px;
+  line-height: 38px;
 }
 
 .v2 .filter-search input {
@@ -4841,5 +4874,1582 @@ body.v2 {
   .v2 .metric-strip .value-block strong,
   .v2 .metric-strip .cash-summary strong {
     font-size: 13px;
+  }
+}
+
+/* ---------- Phase 1 & 2 UX/UI + Data Visualization Enhancements ---------- */
+
+/* Carried-forward points in Performance chart stay visually distinct (hollow ring) without overriding .quiet on long ranges */
+.chart-observation.carried:not(.quiet) {
+  fill: var(--surface);
+  stroke-width: 1.75;
+  opacity: 0.78;
+}
+
+.chart-point-target:hover .chart-observation.carried.quiet,
+.chart-point-target:focus .chart-observation.carried.quiet {
+  fill: var(--surface);
+  stroke-width: 1.75;
+  opacity: 0.9;
+}
+
+.chart-observation.profit.carried { stroke: var(--green); }
+.chart-observation.loss.carried { stroke: var(--red); }
+.chart-observation.flat.carried { stroke: var(--muted); }
+.chart-observation.value.carried { stroke: var(--blue); }
+
+.chart-peak-line {
+  stroke: var(--green);
+  stroke-width: 1;
+  stroke-dasharray: 3 4;
+  opacity: 0.45;
+}
+
+.chart-peak-label {
+  fill: var(--green);
+  font-size: 10.5px;
+  font-weight: 600;
+  opacity: 0.8;
+}
+
+
+/* Holdings table: compact Detailed layout (fits cleanly at 1440px without clipping) */
+.v2 .holdings-panel .asset-cell {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.v2 .holdings-panel .asset-name {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.v2 .holdings-panel .asset-name > span {
+  display: block;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (min-width: 761px) {
+  .v2 .holdings-panel:not(.holdings-overview) table {
+    min-width: 1100px;
+  }
+
+  .v2 .holdings-panel:not(.holdings-overview) th,
+  .v2 .holdings-panel:not(.holdings-overview) td {
+    padding: 8px 8px;
+  }
+
+  .v2 .holdings-panel:not(.holdings-overview) .asset-name > span {
+    max-width: 170px;
+  }
+
+  .v2 .holdings-panel:not(.holdings-overview) .holding-sparkline {
+    width: 44px;
+    height: 18px;
+  }
+
+  .v2 .holdings-panel:not(.holdings-overview) .current-nav-input {
+    width: 78px;
+  }
+
+  .v2 .holdings-panel:not(.holdings-overview) .fund-value-input {
+    width: 108px;
+  }
+
+  .v2 .holdings-panel:not(.holdings-overview) .table-action-button {
+    padding: 0 8px;
+  }
+
+  .v2 .holdings-panel:not(.holdings-overview) .table-action-button span {
+    display: none;
+  }
+}
+
+/* Holdings: 30-day inline NAV sparklines */
+.holding-sparkline {
+  flex: 0 0 auto;
+  display: block;
+  overflow: visible;
+}
+
+.holding-sparkline .spark-base {
+  stroke: var(--line-strong);
+  stroke-width: 0.9;
+  stroke-dasharray: 2 2;
+}
+
+.holding-sparkline .spark-line {
+  fill: none;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Neutral on purpose: red/green is reserved for P&L, and NAV trend can disagree with it. */
+.holding-sparkline .spark-line { stroke: var(--subtle); }
+.holding-sparkline .spark-dot { fill: var(--muted); }
+
+/* Holdings: portfolio weight % and micro-bar under Current Value */
+.value-with-weight {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+}
+
+.holding-weight {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--subtle);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+}
+
+.holding-weight small {
+  font-size: 11px;
+  color: var(--subtle);
+}
+
+/* Calendar: order-day indicator dot */
+.calendar-day-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  width: 100%;
+}
+
+.calendar-day.muted {
+  position: relative;
+}
+
+.calendar-day.muted .calendar-tx-dot {
+  position: absolute;
+  top: 8px;
+  right: 7px;
+}
+
+.calendar-tx-dot {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--blue);
+  flex-shrink: 0;
+}
+
+.calendar-dot.tx {
+  background: var(--blue);
+}
+
+/* Insight dialog enhancements (Fund NAV chart, 4-up metrics, Calendar movers) */
+.v2 .insight-dialog {
+  width: min(680px, calc(100vw - 32px));
+}
+
+.insight-metrics-4 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 18px;
+  margin: 18px 0 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-soft);
+}
+
+.insight-metrics-4 dd {
+  font-size: 15px;
+  font-weight: 650;
+  margin: 4px 0 0;
+}
+
+.insight-metrics-4 dd small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.insight-metrics-4 dd.green small { color: var(--green); }
+.insight-metrics-4 dd.red small { color: var(--red); }
+
+.fund-chart-box {
+  position: relative;
+  margin: 14px 0 6px;
+  padding: 12px 12px 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.fund-insight-chart {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.fund-line {
+  fill: none;
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.fund-line.profit { stroke: var(--green); }
+.fund-line.loss { stroke: var(--red); }
+.fund-line.value { stroke: var(--blue); }
+
+.fund-area { opacity: 0.08; }
+.fund-area.profit { fill: var(--green); }
+.fund-area.loss { fill: var(--red); }
+.fund-area.value { fill: var(--blue); }
+
+.fund-buy-line {
+  stroke: var(--muted);
+  stroke-width: 1.25;
+  stroke-dasharray: 4 3;
+}
+
+.fund-buy-pill {
+  fill: var(--surface-soft);
+  stroke: var(--line-strong);
+  stroke-width: 0.8;
+}
+
+.fund-buy-label {
+  fill: var(--text);
+  font-size: 9.5px;
+  font-weight: 600;
+}
+
+.fund-end-dot { stroke: var(--surface); stroke-width: 1.5; }
+.fund-end-dot.profit { fill: var(--green); }
+.fund-end-dot.loss { fill: var(--red); }
+.fund-end-dot.value { fill: var(--blue); }
+
+.fund-hover-dot {
+  opacity: 0;
+  stroke: var(--surface);
+  stroke-width: 1.5;
+  transition: opacity 100ms ease;
+}
+
+.fund-hover-dot.profit { fill: var(--green); }
+.fund-hover-dot.loss { fill: var(--red); }
+.fund-hover-dot.value { fill: var(--blue); }
+
+.fund-chart-hit-group:hover .fund-hover-dot,
+.fund-chart-hit-group:focus .fund-hover-dot {
+  opacity: 1;
+}
+
+.fund-chart-hit-group:focus {
+  outline: none;
+}
+
+.fund-tx-marker {
+  stroke: var(--surface);
+  stroke-width: 1.6;
+}
+
+.fund-tx-marker.buy { fill: var(--green); }
+.fund-tx-marker.switch-in { fill: var(--blue); }
+.fund-tx-marker.sell,
+.fund-tx-marker.switch-out { fill: var(--red); }
+.fund-tx-marker.dividend { fill: var(--amber); }
+
+.fund-chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.fund-chart-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.fund-legend-line {
+  display: inline-block;
+  width: 14px;
+  height: 2px;
+  border-radius: 2px;
+}
+
+.fund-legend-line.profit { background: var(--green); }
+.fund-legend-line.loss { background: var(--red); }
+.fund-legend-line.value { background: var(--blue); }
+
+.fund-legend-dash {
+  display: inline-block;
+  width: 14px;
+  height: 0;
+  border-top: 1.5px dashed var(--muted);
+}
+
+.fund-legend-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.fund-legend-dot.buy { background: var(--green); }
+.fund-legend-dot.switch-in { background: var(--blue); }
+.fund-legend-dot.sell { background: var(--red); }
+
+.fund-chart-tooltip {
+  position: absolute;
+  z-index: 4;
+  min-width: 148px;
+  max-width: 230px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow: 0 8px 20px rgba(17, 25, 40, 0.12);
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.fund-chart-tooltip strong {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.fund-chart-tooltip > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.fund-chart-tooltip > div span {
+  color: var(--muted);
+}
+
+.fund-tooltip-tx {
+  display: block;
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px solid var(--line);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.insight-tx-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 7px;
+  border-radius: 50%;
+  vertical-align: middle;
+  background: var(--muted);
+}
+
+.insight-tx-dot.buy { background: var(--green); }
+.insight-tx-dot.switch-in { background: var(--blue); }
+.insight-tx-dot.sell,
+.insight-tx-dot.switch-out { background: var(--red); }
+.insight-tx-dot.dividend { background: var(--amber); }
+
+.insight-history-details {
+  margin-top: 18px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.insight-history-details > summary {
+  cursor: pointer;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  user-select: none;
+}
+
+.insight-history-details[open] > summary {
+  margin-bottom: 8px;
+}
+
+/* Calendar Insight: Top fund movers */
+.insight-movers {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.insight-mover-btn {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(60px, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--text);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+  transition: border-color 140ms ease, background-color 140ms ease;
+}
+
+.insight-mover-btn:hover {
+  border-color: var(--line-strong);
+  background: var(--surface-soft);
+}
+
+.insight-mover-name strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.insight-mover-name small {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.insight-mover-bar {
+  display: block;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--line);
+}
+
+.insight-mover-bar i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+}
+
+.insight-mover-bar i.green { background: var(--green); }
+.insight-mover-bar i.red { background: var(--red); }
+
+.insight-mover-btn > b {
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.insight-mover-btn > b.green { color: var(--green); }
+.insight-mover-btn > b.red { color: var(--red); }
+
+@media (max-width: 760px) {
+  .v2 .holdings-panel .filter-select select {
+    height: 42px;
+    min-height: 42px;
+    padding: 0 24px 0 11px;
+    font-size: 14px;
+    line-height: 40px;
+  }
+
+  .v2 .holdings-panel .asset-name > span {
+    max-width: none;
+    white-space: normal;
+  }
+
+  .v2 .holdings-panel .holding-sparkline {
+    width: 54px;
+    height: 18px;
+    margin-top: 2px;
+    align-self: flex-start;
+  }
+
+  .v2 .holdings-panel .value-with-weight {
+    align-items: flex-start;
+  }
+
+  /* Eliminate duplicated Bank / Port cell and empty Edit footer row on mobile Detailed cards */
+  .v2 .holdings-panel:not(.holdings-overview) .table-wrap tbody tr[data-symbol] {
+    position: relative;
+    padding-bottom: 14px;
+  }
+
+  .v2 .holdings-panel:not(.holdings-overview) .table-wrap tbody tr[data-symbol] td:first-child {
+    padding-right: 44px;
+  }
+
+  .v2 .holdings-panel:not(.holdings-overview) .table-wrap tbody tr[data-symbol] td:nth-child(2) {
+    display: none;
+  }
+
+  .v2 .holdings-panel:not(.holdings-overview) .table-wrap tbody tr[data-symbol] td:last-child {
+    position: absolute;
+    top: 8px;
+    right: 0;
+    width: auto;
+    min-height: 0;
+    padding: 0;
+    border: 0;
+    grid-column: auto;
+  }
+
+  .v2 .holdings-panel:not(.holdings-overview) .table-action-button {
+    width: 38px;
+    height: 38px;
+    min-width: 38px;
+    min-height: 38px;
+    padding: 0;
+  }
+
+  .v2 .performance-panel .view-switch button {
+    padding: 7px 8px;
+    font-size: 12px;
+  }
+
+  .insight-metrics-4 {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+}
+
+/* ---------- Phase 3: Interactive Allocation, Holdings Grouping/Closed, Activity Filters, Daily NAV Updater ---------- */
+
+/* Interactive SVG Allocation Donut */
+.v2 .allocation-heading {
+  flex-wrap: wrap;
+  gap: 8px 10px;
+}
+
+.v2 .allocation-mode-switch {
+  display: inline-grid;
+  grid-template-columns: repeat(3, auto);
+  margin-top: 12px;
+  align-self: flex-start;
+}
+
+.v2 .allocation-mode-switch button {
+  min-height: 28px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.v2 .allocation-layout {
+  gap: 16px;
+  margin-top: 14px;
+}
+
+.v2 .donut {
+  position: relative;
+  width: min(206px, 72%);
+  aspect-ratio: 1;
+  background: none;
+  box-shadow: none;
+}
+
+.v2 .donut-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.v2 .donut-slice {
+  fill: none;
+  stroke-width: 24;
+  stroke-linecap: butt;
+  cursor: pointer;
+  transition: stroke-width 150ms ease, opacity 150ms ease, filter 150ms ease;
+}
+
+.v2 .donut-slice.is-hovered,
+.v2 .donut-slice.is-active {
+  stroke-width: 29;
+  filter: drop-shadow(0 3px 6px rgba(16, 24, 40, 0.14));
+}
+
+.v2 .donut-slice.is-dimmed {
+  opacity: 0.34;
+}
+
+.v2 .donut-slice:focus-visible {
+  outline: none;
+  stroke-width: 30;
+  filter: drop-shadow(0 0 0 2px var(--blue));
+}
+
+.v2 .donut-empty-ring {
+  fill: none;
+  stroke: var(--line);
+  stroke-width: 24;
+}
+
+.v2 .donut-center {
+  inset: 21%;
+  background: transparent;
+  pointer-events: none;
+  padding: 4px;
+}
+
+.v2 .donut-center strong {
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.v2 .donut-center span {
+  max-width: 100%;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.v2 .allocation-list {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 2px;
+}
+
+.v2 .allocation-item {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 140ms ease, border-color 140ms ease, opacity 140ms ease;
+}
+
+.v2 .allocation-item:hover,
+.v2 .allocation-item.is-hovered {
+  background: var(--surface-soft);
+}
+
+.v2 .allocation-item.is-active {
+  border-color: color-mix(in srgb, var(--blue) 35%, var(--line));
+  background: var(--blue-soft);
+}
+
+.v2 .allocation-item.is-dimmed {
+  opacity: 0.48;
+}
+
+.v2 .allocation-item i {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+}
+
+.v2 .alloc-name {
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.v2 .alloc-sub {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.v2 .alloc-metrics {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.v2 .alloc-pct {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.v2 .alloc-detail {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.v2 .alloc-pnl {
+  padding: 1px 5px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.v2 .alloc-pnl.green {
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.v2 .alloc-pnl.red {
+  background: var(--red-soft);
+  color: var(--red);
+}
+
+.v2 .alloc-pnl.neutral {
+  background: var(--surface-soft);
+  color: var(--muted);
+}
+
+/* Desktop, side by side with Performance: keep Allocation no taller than the chart.
+   Smaller donut and one-line rows (name · value · P&L · weight). */
+@media (min-width: 1181px) {
+  .v2 .allocation-mode-switch {
+    margin-top: 10px;
+  }
+
+  /* The panel's height is set by the Performance chart beside it; the donut row
+     takes whatever is left after the list, between 156px and 206px. */
+  .v2 .allocation-layout {
+    flex: 1 1 auto;
+    min-height: 0;
+    grid-template-rows: minmax(156px, 1fr) auto;
+    gap: 12px;
+    margin-top: 12px;
+  }
+
+  .v2 .donut {
+    width: auto;
+    height: 100%;
+    max-height: 206px;
+    aspect-ratio: 1;
+    contain: size; /* size from the row, never push the panel taller */
+    justify-self: center;
+    align-self: center;
+  }
+
+  .v2 .donut-slice {
+    stroke-width: 22;
+  }
+
+  .v2 .donut-slice.is-hovered,
+  .v2 .donut-slice.is-active {
+    stroke-width: 27;
+  }
+
+  .v2 .donut-center strong {
+    font-size: 16px;
+  }
+
+  .v2 .allocation-list {
+    gap: 0;
+  }
+
+  .v2 .allocation-item {
+    padding: 5px 8px;
+  }
+
+  .v2 .alloc-metrics {
+    flex-direction: row;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .v2 .alloc-pct {
+    order: 2;
+    min-width: 44px;
+  }
+
+  .v2 .alloc-detail {
+    order: 1;
+  }
+}
+
+/* Holdings Phase 3: Active/Closed toggle, Update NAVs button, Group by, Filter pills, Closed table */
+.v2 .holdings-scope button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  font-size: 12.5px;
+}
+
+.v2 .holdings-scope button span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: rgba(16, 24, 40, 0.06);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.v2 .holdings-scope button[aria-pressed="true"] span {
+  background: var(--blue-soft);
+  color: var(--blue);
+}
+
+.v2 .holdings-view[hidden] + .update-navs-button {
+  margin-left: auto;
+}
+
+.v2 .update-navs-button {
+  flex-direction: row;
+  gap: 6px;
+  min-height: 36px;
+  padding: 0 13px 0 11px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.v2 .update-navs-button:hover {
+  border-color: var(--line);
+  background: var(--surface-soft);
+  color: var(--text);
+  box-shadow: none;
+}
+
+.v2 .update-navs-button svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.v2 .holding-filter-bar {
+  grid-template-columns: minmax(220px, 1.35fr) minmax(150px, 1fr) minmax(160px, 1fr) auto;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+@media (min-width: 761px) {
+  .v2 .holdings-panel .fund-value-input {
+    width: 122px;
+    padding: 0 7px;
+  }
+
+  .v2 .holdings-panel.holdings-overview .closed-holdings-table th,
+  .v2 .holdings-panel.holdings-overview .closed-holdings-table td {
+    display: table-cell;
+  }
+}
+
+.v2 .active-filter-pills {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: -2px 0 12px;
+}
+
+.v2 .active-filter-pills[hidden] {
+  display: none;
+}
+
+.v2 .active-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--blue) 32%, var(--line));
+  border-radius: 999px;
+  background: var(--blue-soft);
+  color: var(--blue-dark);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 140ms ease;
+}
+
+.v2 .active-filter-chip:hover {
+  background: var(--blue-soft);
+}
+
+.v2 .active-filter-chip i {
+  font-style: normal;
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0.75;
+}
+
+.v2 .closed-holdings-wrap[hidden] {
+  display: none;
+}
+
+.v2 .closed-table-scroll {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.v2 .holdings-panel .closed-holdings-table {
+  width: 100%;
+  min-width: 0;
+  border-collapse: collapse;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.v2 .closed-holdings-table thead th {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.v2 .closed-holdings-table thead th:nth-child(n + 5),
+.v2 .closed-holdings-table tbody td:nth-child(n + 5) {
+  text-align: right;
+}
+
+.v2 .closed-holdings-table tbody td {
+  padding: 11px 12px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+}
+
+.v2 .closed-holdings-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.v2 .closed-holdings-table tbody tr.total-row td {
+  background: var(--surface-soft);
+  font-weight: 650;
+}
+
+.v2 .muted-note {
+  color: var(--subtle);
+  font-size: 12px;
+  font-weight: 500;
+  font-style: italic;
+}
+
+/* Recent Activity Phase 3: Search, Type filter chips, Realized P&L pills */
+.v2 .activity-panel,
+.v2 .breakdown-panel {
+  height: 470px;
+}
+
+.v2 .activity-toolbar {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  flex: none;
+}
+
+.v2 .activity-search input {
+  width: 100%;
+  height: 34px;
+  min-height: 34px;
+  font-size: 12.5px;
+  line-height: 32px;
+}
+
+.v2 .activity-type-chips {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 5px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding-bottom: 2px;
+}
+
+.v2 .activity-type-chips::-webkit-scrollbar {
+  display: none;
+}
+
+.v2 .activity-type-chips button {
+  flex: none;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 140ms ease, color 140ms ease, border-color 140ms ease;
+}
+
+.v2 .activity-type-chips button:hover {
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+
+.v2 .activity-type-chips button[aria-pressed="true"] {
+  border-color: var(--blue);
+  background: var(--blue-soft);
+  color: var(--blue-dark);
+}
+
+.v2 .activity-pnl-pill {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 650;
+  vertical-align: middle;
+}
+
+.v2 .activity-pnl-pill.green {
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.v2 .activity-pnl-pill.red {
+  background: var(--red-soft);
+  color: var(--red);
+}
+
+/* Daily NAV Quick-Updater Modal */
+.nav-updater-dialog {
+  width: min(780px, calc(100vw - 24px));
+  max-width: none;
+  max-height: min(86vh, 760px);
+  padding: 0;
+  overflow: hidden;
+}
+
+.nav-updater-dialog[open] {
+  display: flex;
+}
+
+.nav-updater-dialog > form {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-height: inherit;
+  padding: 22px 24px 18px;
+  overflow: hidden;
+}
+
+.nav-updater-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding-right: 36px;
+}
+
+.nav-updater-head h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.nav-updater-head .insight-description {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+}
+
+.nav-updater-progress {
+  flex: none;
+  min-width: 150px;
+  display: grid;
+  gap: 5px;
+  text-align: right;
+}
+
+.nav-progress-label {
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.nav-progress-label strong {
+  color: var(--text);
+}
+
+.nav-progress-track {
+  display: block;
+  width: 100%;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--line);
+}
+
+.nav-progress-track i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--blue);
+  transition: width 180ms ease;
+}
+
+.nav-updater-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 14px 0 12px;
+}
+
+.nav-filter-group {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.nav-filter-group button {
+  height: 30px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.nav-filter-group button:hover {
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+
+.nav-filter-group button[aria-pressed="true"] {
+  border-color: var(--blue);
+  background: var(--blue-soft);
+  color: var(--blue-dark);
+}
+
+.nav-updater-list {
+  flex: 1 1 auto;
+  min-height: 160px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.nav-updater-header-row,
+.nav-updater-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) 92px 134px 112px;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px;
+}
+
+.nav-updater-header-row {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.nav-updater-header-row .num,
+.nav-updater-row .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.nav-updater-row {
+  border-bottom: 1px solid var(--line);
+  transition: background-color 140ms ease;
+}
+
+.nav-updater-row:last-child {
+  border-bottom: 0;
+}
+
+.nav-updater-row.is-dirty {
+  background: var(--blue-soft);
+}
+
+.nav-row-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.nav-row-title strong {
+  font-size: 13.5px;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.nav-row-fund > small {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.nav-status-pill {
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.nav-status-pill.done {
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.nav-status-pill.pending {
+  background: var(--amber-soft);
+  color: var(--amber-text);
+}
+
+.nav-status-pill.dirty {
+  background: var(--blue-soft);
+  color: var(--blue-dark);
+}
+
+.nav-lag-badge {
+  padding: 1px 5px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.nav-row-prev {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.nav-row-input {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.nav-input-label {
+  display: none;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.nav-pct-field {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+}
+
+.nav-row-input input {
+  width: 100%;
+  height: 34px;
+  padding: 0 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.nav-row-input input:focus {
+  border-color: var(--blue);
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(47, 91, 234, 0.14);
+}
+
+.nav-row-input input.green { color: var(--green); }
+.nav-row-input input.red { color: var(--red); }
+
+.nav-pct-field > span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.nav-updater-menu {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 14px 0 0;
+  padding: 0;
+}
+
+.nav-updater-dirty {
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.nav-updater-dirty.has-dirty {
+  color: var(--blue-dark);
+  font-weight: 650;
+}
+
+@media (max-width: 760px) {
+  .v2 .allocation-mode-switch {
+    width: 100%;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .v2 .holdings-panel .table-head {
+    gap: 8px;
+  }
+
+  .v2 .holdings-scope {
+    order: 3;
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .v2 .holdings-scope button {
+    justify-content: center;
+  }
+
+  .v2 .holdings-panel .holdings-view {
+    order: 4;
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    margin-left: 0;
+  }
+
+  .v2 .holdings-panel .update-navs-button {
+    order: 5;
+    flex: 1 1 0;
+    margin-left: 0;
+    justify-content: center;
+    min-height: 38px;
+    border-color: var(--line);
+  }
+
+  .v2 .holdings-panel .add-fund-button {
+    order: 6;
+    flex: 1 1 0;
+    justify-content: center;
+    min-height: 38px;
+  }
+
+  .v2 .holdings-panel .holding-filter-bar,
+  .v2 .holdings-panel.is-closed-scope .holding-filter-bar {
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  .v2 .holdings-panel .holding-filter-bar .filter-search {
+    grid-column: 1 / -1;
+  }
+
+  .v2 .holdings-panel .holding-filter-bar .filter-reset {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+
+
+  /* Closed holdings responsive mobile cards */
+  .v2 .holdings-panel .closed-table-scroll {
+    border: 0;
+    overflow: visible;
+  }
+
+  .v2 .holdings-panel .closed-holdings-table,
+  .v2 .holdings-panel .closed-holdings-table tbody {
+    display: block;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .v2 .holdings-panel .closed-holdings-table thead {
+    display: none;
+  }
+
+  .v2 .holdings-panel .closed-holdings-table tbody tr[data-closed-symbol] {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 10px 12px;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .v2 .holdings-panel .closed-holdings-table tbody tr[data-closed-symbol] td {
+    display: none;
+    padding: 0;
+    border: 0;
+    text-align: left;
+  }
+
+  .v2 .holdings-panel .closed-holdings-table tbody tr[data-closed-symbol] td:first-child {
+    display: block;
+    grid-column: 1 / -1;
+  }
+
+  .v2 .holdings-panel .closed-holdings-table tbody tr[data-closed-symbol] td:nth-child(6),
+  .v2 .holdings-panel .closed-holdings-table tbody tr[data-closed-symbol] td:nth-child(7),
+  .v2 .holdings-panel.holdings-overview .closed-holdings-table tbody tr[data-closed-symbol] td:nth-child(7) {
+    display: block;
+  }
+
+  .v2 .holdings-panel .closed-holdings-table tbody tr[data-closed-symbol] td:nth-child(7) {
+    text-align: right;
+    font-weight: 600;
+  }
+
+  .v2 .holdings-panel .closed-holdings-table tbody tr[data-closed-symbol] td:nth-child(6) {
+    font-weight: 600;
+  }
+
+  .v2 .holdings-panel .closed-holdings-table tbody tr[data-closed-symbol] td[data-label]:not(:first-child)::before,
+  .v2 .holdings-panel .closed-holdings-table tbody tr.total-row td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 3px;
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 500;
+  }
+
+  .v2 .holdings-panel .closed-holdings-table tbody tr.total-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 10px 12px;
+    margin-top: 12px;
+    padding: 14px 12px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--surface-soft);
+  }
+
+  .v2 .holdings-panel .closed-holdings-table tbody tr.total-row td {
+    display: none;
+    padding: 0;
+    border: 0;
+    background: transparent;
+  }
+
+  .v2 .holdings-panel .closed-holdings-table tbody tr.total-row td:first-child {
+    display: block;
+    grid-column: 1 / -1;
+  }
+
+  .v2 .holdings-panel .closed-holdings-table tbody tr.total-row td:nth-child(6),
+  .v2 .holdings-panel .closed-holdings-table tbody tr.total-row td:nth-child(7),
+  .v2 .holdings-panel.holdings-overview .closed-holdings-table tbody tr.total-row td:nth-child(7) {
+    display: block;
+  }
+
+  .v2 .holdings-panel .closed-holdings-table tbody tr.total-row td:nth-child(6) {
+    text-align: left;
+  }
+
+  .v2 .holdings-panel .closed-holdings-table tbody tr.total-row td:nth-child(7) {
+    text-align: right;
+  }
+
+  .v2 .activity-panel {
+    height: auto;
+    max-height: 580px;
+  }
+
+  /* NAV updater modal mobile stacking */
+  .nav-updater-dialog > form {
+    padding: 18px 16px 14px;
+  }
+
+  .nav-updater-head {
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .nav-updater-progress {
+    width: 100%;
+    text-align: left;
+  }
+
+  .nav-updater-header-row {
+    display: none;
+  }
+
+  .nav-updater-row {
+    grid-template-columns: 1fr 1fr;
+    gap: 8px 10px;
+    padding: 12px;
+  }
+
+  .nav-row-fund {
+    grid-column: 1 / -1;
+  }
+
+  .nav-row-prev {
+    display: none;
+  }
+
+  .nav-input-label {
+    display: block;
+  }
+
+  .nav-row-input input {
+    height: 40px;
+    font-size: 15px;
+  }
+
+  .nav-updater-menu {
+    flex-wrap: wrap;
+  }
+
+  .nav-updater-dirty {
+    width: 100%;
   }
 }
