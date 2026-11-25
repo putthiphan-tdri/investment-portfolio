@@ -4944,11 +4944,22 @@ function fundInsightChartMarkup(fund, historyAsc, transactions) {
     py: y(Number(entry.nav)),
   }));
   const linePath = coords.map((pt, idx) => `${idx === 0 ? "M" : "L"}${pt.px.toFixed(1)},${pt.py.toFixed(1)}`).join(" ");
-  const floorY = (top + plotH).toFixed(1);
-  const areaPath = `${linePath} L${coords.at(-1).px.toFixed(1)},${floorY} L${coords[0].px.toFixed(1)},${floorY} Z`;
+  const floorY = top + plotH;
+  // With a buying NAV, the line is green above it (in profit) and red below it (at a loss),
+  // and the area fills between the line and the buying NAV, like the portfolio P&L chart.
+  const buyY = buyingNav > 0 ? Math.min(Math.max(y(buyingNav), top), floorY) : null;
+  const baseY = (buyY ?? floorY).toFixed(1);
+  const areaPath = `${linePath} L${coords.at(-1).px.toFixed(1)},${baseY} L${coords[0].px.toFixed(1)},${baseY} Z`;
+  const toneFor = (navValue) => buyingNav > 0 ? (navValue >= buyingNav ? "profit" : "loss") : "value";
+  const clipId = `fund-clip-${String(fund.symbol).replace(/[^a-z0-9]/gi, "-")}`;
+  const lineSvg = buyY === null
+    ? `<path class="fund-area value" d="${areaPath}"/><path class="fund-line value" d="${linePath}"/>`
+    : `<defs><clipPath id="${clipId}-up"><rect x="${left - 4}" y="${top - 4}" width="${plotW + 8}" height="${(buyY - top + 4).toFixed(1)}"/></clipPath><clipPath id="${clipId}-down"><rect x="${left - 4}" y="${buyY.toFixed(1)}" width="${plotW + 8}" height="${(floorY - buyY + 4).toFixed(1)}"/></clipPath></defs>
+        <path class="fund-area profit" clip-path="url(#${clipId}-up)" d="${areaPath}"/><path class="fund-area loss" clip-path="url(#${clipId}-down)" d="${areaPath}"/>
+        <path class="fund-line profit" clip-path="url(#${clipId}-up)" d="${linePath}"/><path class="fund-line loss" clip-path="url(#${clipId}-down)" d="${linePath}"/>`;
 
   const lastNav = Number(navPoints.at(-1).nav);
-  const tone = buyingNav > 0 ? (lastNav >= buyingNav ? "profit" : "loss") : "value";
+  const tone = toneFor(lastNav);
 
   // Map transactions to the closest recorded NAV point within the chart window.
   const txByDate = new Map();
@@ -5001,11 +5012,13 @@ function fundInsightChartMarkup(fund, historyAsc, transactions) {
       : idx === coords.length - 1
       ? `<circle class="fund-end-dot ${tone}" cx="${pt.px.toFixed(1)}" cy="${pt.py.toFixed(1)}" r="3.5"/>`
       : "";
-    return `<g class="fund-chart-hit-group" data-fund-point data-date="${pt.date}" data-nav="${Number(pt.nav).toFixed(4)}" data-pct="${Number(pt.pct || 0).toFixed(2)}" data-tx="${htmlAttr(txSummary)}" tabindex="${idx === coords.length - 1 ? 0 : -1}"><circle class="chart-point-hit" cx="${pt.px.toFixed(1)}" cy="${pt.py.toFixed(1)}" r="10"/><circle class="fund-hover-dot ${tone}" cx="${pt.px.toFixed(1)}" cy="${pt.py.toFixed(1)}" r="3.5"/>${txDot}</g>`;
+    return `<g class="fund-chart-hit-group" data-fund-point data-date="${pt.date}" data-nav="${Number(pt.nav).toFixed(4)}" data-pct="${Number(pt.pct || 0).toFixed(2)}" data-tx="${htmlAttr(txSummary)}" tabindex="${idx === coords.length - 1 ? 0 : -1}"><circle class="chart-point-hit" cx="${pt.px.toFixed(1)}" cy="${pt.py.toFixed(1)}" r="10"/><circle class="fund-hover-dot ${toneFor(Number(pt.nav))}" cx="${pt.px.toFixed(1)}" cy="${pt.py.toFixed(1)}" r="3.5"/>${txDot}</g>`;
   }).join("");
 
   const legendItems = [
-    `<span><i class="fund-legend-line ${tone}"></i>NAV (${htmlAttr(fund.navCurrency || "THB")})</span>`,
+    buyY === null
+      ? `<span><i class="fund-legend-line value"></i>NAV (${htmlAttr(fund.navCurrency || "THB")})</span>`
+      : `<span><i class="fund-legend-line profit"></i><i class="fund-legend-line loss"></i>NAV (${htmlAttr(fund.navCurrency || "THB")}) · green above avg buy, red below</span>`,
     buyingNav > 0 ? `<span><i class="fund-legend-dash"></i>Avg Buy NAV</span>` : "",
     usedKinds.has("buy") ? `<span><i class="fund-legend-dot buy"></i>Buy</span>` : "",
     usedKinds.has("switch-in") ? `<span><i class="fund-legend-dot switch-in"></i>Switch in</span>` : "",
@@ -5016,8 +5029,7 @@ function fundInsightChartMarkup(fund, historyAsc, transactions) {
     <div class="fund-chart-box">
       <svg class="fund-insight-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${htmlAttr(fund.symbol)} NAV history chart">
         ${gridSvg}${xLabelsSvg}
-        <path class="fund-area ${tone}" d="${areaPath}"/>
-        <path class="fund-line ${tone}" d="${linePath}"/>
+        ${lineSvg}
         ${buyLineSvg}
         ${markersSvg}
       </svg>
